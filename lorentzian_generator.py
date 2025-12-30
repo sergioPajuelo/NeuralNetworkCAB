@@ -205,7 +205,7 @@ if __name__ == "__main__":
         "ac":     (0.3, 1.8),          
         "dt":     (0, 1e-9),        
         "phi":    (-np.pi, np.pi),      
-        "dphi":   (-0.2, 0.2),      
+        "dphi":   (-np.pi/4, np.pi/4),      
         "kappai": (1e4, 1e6),         
         "fr":     (1e9 - 2e6, 1e9 + 2e6)
     }
@@ -218,7 +218,7 @@ if __name__ == "__main__":
         cavity_params=cavity_params,
         kc_limits=kc_limits,
         frequency_points=2000,     
-        noise_std_signal=(0.001,0.05),
+        noise_std_signal=0.00,
     )
 
     i = 2
