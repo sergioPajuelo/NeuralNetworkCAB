@@ -1,7 +1,9 @@
 import io
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 
+from lorentzian import lorentzian as lorentzian_cy
 from network import Net
 from sctlib.analysis import Trace
 
@@ -84,7 +86,7 @@ def main():
     MODEL_PATH = "kc_predictor.pt"
     DAT_PATH   = r"Real_traces/Line1_TiAl_CrossPolCheck_LER3_IQmeas_PDUT-84.0dBm_T140.0mK_Tbb5.0K_0.7323GHzto0.7363GHz_Rate1.0e+06_Sample1000000_BW1.0Hz_Navg1_RF0dBm_LO0dBm.dat"
 
-    trace = Trace()
+    """ trace = Trace()
     trace.load_trace(source='cab', path=DAT_PATH)
     results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=False)
     kc_oneshot = float(results["one-shot"].final["kappac"])
@@ -96,6 +98,124 @@ def main():
 
 
     kc_nn = predict_kc_nn(net, X_real)
+
+    print(f"-> Kc pred (NN, .dat real)   = {kc_nn:.6e}")
+    print(f"-> Kc one-shot (fit)         = {kc_oneshot:.6e}")
+    print(f"-> Relative error (NN vs fit)= {abs(kc_nn-kc_oneshot)/kc_oneshot:.3%}") """
+
+    # Experimental (.dat)
+    f_exp, I_exp, Q_exp = load_iq_from_dat(DAT_PATH)
+    s_exp = I_exp + 1j * Q_exp
+    amp_exp = np.abs(s_exp)
+
+    # One-shot  
+    trace = Trace()
+    trace.load_trace(source="cab", path=DAT_PATH)
+    results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=False)
+
+    fit = results["one-shot"].final
+    kc_oneshot = float(fit["kappac"])
+    
+    a     = float(fit["a"])
+    dt    = float(fit["dt"])
+    phi0  = float(fit["phi0"])      
+    rc    = float(fit["rc"])        
+    dphi  = float(fit["fano"])      
+    fr    = float(fit["resonance"])
+
+    amp_fit = np.abs(results["one-shot"].tprx)
+
+    # Neural Network (kc) 
+    net, ckpt = load_trained_model(MODEL_PATH)
+    X_real = build_nn_input_from_dat_iq(DAT_PATH, input_dim=int(ckpt["input_dim"]))
+    kc_nn = predict_kc_nn(net, X_real)
+
+    # Para reconstruir la curva NN: mantengo kappa_i del one-shot y cambio kappa_c
+    kappai = float(fit["kappai"])
+    kappa_nn = kappai + kc_nn
+    rc_nn = kc_nn / kappa_nn if kappa_nn > 0 else rc
+
+    s_nn = lorentzian_cy(
+        f_exp.astype(np.float64),
+        a, dt, phi0,
+        rc_nn, kappa_nn, dphi, fr
+    )
+    amp_nn = np.abs(s_nn)
+
+    # Plot
+    fig, ax = plt.subplots(
+        1, 1,
+        dpi=300,
+        figsize=(9.7, 4.8),
+        constrained_layout=True
+    )
+
+    # --- Experimental: scatter ---
+    ax.scatter(
+        f_exp,
+        amp_exp,
+        s=6,
+        color="black",
+        alpha=0.6,
+        label="Experimental",
+        zorder=3
+    )
+
+    # --- One-shot: línea ---
+    n = min(len(f_exp), len(amp_fit))
+    ax.plot(
+        f_exp[:n],
+        np.asarray(amp_fit)[:n].real,
+        label="One-shot",
+        linewidth=2.8,
+        linestyle="--",     # ← clave
+        color="gold",
+        zorder=4
+    )
+
+    # --- Neural Network: línea ---
+    ax.plot(
+        f_exp,
+        amp_nn,
+        label="Neural Network",
+        linewidth=1.8,
+        color="tomato",
+        zorder=1
+    )
+
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel("|S21|")
+    ax.set_title("Amplitude: Experimental vs One-shot vs Neural Network")
+
+    ax.legend(frameon=False)
+
+    # Texto con kappac
+    txt = (
+        f"One-shot κc = {kc_oneshot:.3e}\n"
+        f"NN κc = {kc_nn:.3e}"
+    )
+
+    ax.text(
+        0.02, 0.98, txt,
+        transform=ax.transAxes,
+        va="top", ha="left",
+        fontsize=10,
+        bbox=dict(
+            boxstyle="round",
+            facecolor="white",
+            alpha=0.85,
+            linewidth=0.8
+        )
+    )
+
+    ax.tick_params(
+        direction="in",
+        which="both",
+        top=True,
+        right=True
+    )
+
+    plt.show()
 
     print(f"-> Kc pred (NN, .dat real)   = {kc_nn:.6e}")
     print(f"-> Kc one-shot (fit)         = {kc_oneshot:.6e}")

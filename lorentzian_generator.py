@@ -162,7 +162,7 @@ def lorentzian_generator(
 
         s_clean = _apply_system_response(
             f, s_clean,
-            poly_deg_range=(1, 2),
+            poly_deg_range=(1, 5),
             poly_coeff_scale=np.random.uniform(0.02, 0.06),      
             dt_sys_range=(-4e-9, 4e-9), 
             phi0_sys_range=(-np.pi, np.pi),
@@ -207,18 +207,17 @@ if __name__ == "__main__":
         "phi":    (-np.pi, np.pi),      
         "dphi":   (-np.pi/4, np.pi/4),      
         "kappai": (1e4, 1e6),         
-        "fr":     (1e9 - 2e6, 1e9 + 2e6)
+        "fr":     (7.30e11 - 2e9, 7.50e11 + 2e9)
     }
 
     kc_limits = (1e4, 1e5)
-    noise_std_signal = np.random.uniform(0.001, 0.05)
 
     f, X_meas, X_clean, kc_true = lorentzian_generator(
         n_samples=3,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
-        frequency_points=2000,     
-        noise_std_signal=0.00,
+        frequency_points=5000,     
+        noise_std_signal=0.0,
     )
 
     i = 2
@@ -226,12 +225,14 @@ if __name__ == "__main__":
 
     re = X_meas[i, :F]
     im = X_meas[i, F:]
-    mag = np.abs(re + 1j * im)
+    mag = np.sqrt((re**2 + im**2))
+
+    f_GHz = f * 1e-9
 
     plt.figure()
-    plt.plot(f, re, label="Re(S21)")
-    plt.plot(f, im, label="Im(S21)")
-    plt.plot(f, mag, label="|S21|", linestyle="--")
+    plt.plot(f_GHz, re, label="Re(S21)")
+    plt.plot(f_GHz, im, label="Im(S21)")
+    plt.plot(f_GHz, mag, label="|S21|", linestyle="--")
     plt.xlabel("Frequency [Hz]")
     plt.ylabel("Amplitude")
     plt.title(f"Lorentzian clean (kc = {kc_true[i]:.2e})")
@@ -240,7 +241,7 @@ if __name__ == "__main__":
     ax = plt.gca()
     ax.tick_params(direction='in', which='both')
 
-    plt.show() 
+    plt.show()  
 
     """ i = 2
     F = f.shape[0]

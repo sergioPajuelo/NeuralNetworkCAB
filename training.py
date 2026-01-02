@@ -11,9 +11,9 @@ def main():
         "ac":     (0.3, 1.8),          
         "dt":     (0, 1e-9),        
         "phi":    (-np.pi, np.pi),      
-        "dphi":   (-0.2, 0.2),      
+        "dphi":   (-np.pi/4, np.pi/4),      
         "kappai": (1e4, 1e6),         
-        "fr":     (1e9 - 2e6, 1e9 + 2e6)
+        "fr": (7.30e11 - 2e9, 7.50e11 + 2e9)
     }
 
     kc_limits = (1e4, 1e5)
@@ -64,7 +64,7 @@ def main():
     print(f"MAE Kc (test): {mae_test:.3e}")
     print(f"Relative error (test): {rel_err_test:.3%}")
 
-    model_path = "src/sctlib/analysis/trace/NeuralNetwork/kc_predictor.pt"
+    model_path = "kc_predictor.pt"
     torch.save({
         "model_state_dict": net.state_dict(),
         "input_dim": X_train.shape[1],
@@ -83,7 +83,7 @@ def main():
     plt.ylabel("Loss")
     plt.title("Training loss")
     plt.tight_layout()
-    plt.savefig("src/sctlib/analysis/trace/NeuralNetwork/training_loss.png", dpi=200)
+    plt.savefig("training_loss.png", dpi=200)
 
     # Kc true vs predicted (train and test)
     plt.figure()
@@ -101,7 +101,7 @@ def main():
     plt.title("Parity plot (Kc)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("src/sctlib/analysis/trace/NeuralNetwork/parity_kc_train_test.png", dpi=200)
+    plt.savefig("parity_kc_train_test.png", dpi=200)
 
     rel_test = (kc_pred_test - kc_true_test) / kc_true_test
     # 4) Residuals vs Kc_true (sesgo)
@@ -113,7 +113,7 @@ def main():
     plt.ylabel("Relative error")
     plt.title("Residuals vs Kc (test)")
     plt.tight_layout()
-    plt.savefig("src/sctlib/analysis/trace/NeuralNetwork/residuals_vs_kc_test.png", dpi=200)
+    plt.savefig("residuals_vs_kc_test.png", dpi=200)
 
     print("Saved plots:")
     print(" - training_loss.png")
