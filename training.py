@@ -18,7 +18,7 @@ def main():
 
     kc_limits = (1e4, 1e5)
 
-    f, X_meas, X_clean, kc_true = lorentzian_generator(
+    f, X_meas, X_clean, kc_true, kappai_true = lorentzian_generator(
         n_samples=30000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
@@ -35,6 +35,9 @@ def main():
 
     train_idx = idx[:split]
     test_idx  = idx[split:]
+
+    kappai_train = kappai_true[train_idx]
+    kappai_test  = kappai_true[test_idx]
 
     X_train, y_train = X[train_idx], y[train_idx]
     X_test,  y_test  = X[test_idx],  y[test_idx]
@@ -57,6 +60,9 @@ def main():
 
     kc_pred_test = np.exp(y_pred_test).flatten()
     kc_true_test = np.exp(y_test).flatten()
+
+    ratio_true_train = kc_true_train / kappai_train
+    ratio_true_test  = kc_true_test  / kappai_test
 
     mae_test = np.mean(np.abs(kc_pred_test - kc_true_test))
     rel_err_test = np.mean(np.abs(kc_pred_test - kc_true_test) / kc_true_test)
@@ -85,7 +91,7 @@ def main():
     plt.tight_layout()
     plt.savefig("training_loss.png", dpi=200)
 
-    # Kc true vs predicted (train and test)
+    """ # Kc true vs predicted (train and test)
     plt.figure()
     plt.scatter(kc_true_train, kc_pred_train, s=10, alpha=0.5, label="Train")
     plt.scatter(kc_true_test, kc_pred_test, s=10, alpha=0.5, label="Test")
@@ -101,7 +107,23 @@ def main():
     plt.title("Parity plot (Kc)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("parity_kc_train_test.png", dpi=200)
+    plt.savefig("parity_kc_train_test.png", dpi=200) """
+
+
+    plt.figure()
+    plt.scatter(ratio_true_train, kc_pred_train, s=10, alpha=0.5, label="Train")
+    plt.scatter(ratio_true_test,  kc_pred_test,  s=10, alpha=0.5, label="Test")
+
+    plt.xscale("log")
+    plt.yscale("log")
+
+    plt.xlabel("Kc / Ki (true)")
+    plt.ylabel("Kc predicted")
+    plt.title("Kc predicted vs Kc/Ki")
+
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("kc_pred_vs_ratio_kc_ki.png", dpi=200)
 
     rel_test = (kc_pred_test - kc_true_test) / kc_true_test
     # 4) Residuals vs Kc_true (sesgo)

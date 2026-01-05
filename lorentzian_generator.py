@@ -115,7 +115,7 @@ def lorentzian_generator(
     """
 
 
-
+    kappai_true = np.zeros(n_samples)
     log_lo, log_hi = np.log(kc_limits[0]), np.log(kc_limits[1])
     kc_true = np.exp(np.random.uniform(log_lo, log_hi, size=n_samples))
 
@@ -142,6 +142,7 @@ def lorentzian_generator(
             np.log(cavity_params["kappai"][0]),
             np.log(kc_limits[1] * 5)
         )))
+        kappai_true[i] = kappai
 
         phi  = float(np.random.uniform(*cavity_params["phi"]))
 
@@ -167,6 +168,13 @@ def lorentzian_generator(
             dt_sys_range=(-4e-9, 4e-9), 
             phi0_sys_range=(-np.pi, np.pi),
         )
+
+        c0 = (np.random.normal(0.0, 0.05) + 1j*np.random.normal(0.0, 0.05))
+        s_clean = s_clean + c0
+        eps = np.random.uniform(-0.03, 0.03)  # 3% de imbalance
+        I = s_clean.real * (1 + eps)
+        Q = s_clean.imag * (1 - eps)
+        s_clean = I + 1j*Q
 
         s_meas = s_clean.copy()
 
@@ -197,7 +205,7 @@ def lorentzian_generator(
         )
         traces.append(tr) """
 
-    return f, X_meas, X_clean, kc_true.astype(np.float32)#, traces
+    return f, X_meas, X_clean, kc_true.astype(np.float32), kappai_true
 
 
 if __name__ == "__main__":
@@ -212,7 +220,7 @@ if __name__ == "__main__":
 
     kc_limits = (1e4, 1e5)
 
-    f, X_meas, X_clean, kc_true = lorentzian_generator(
+    f, X_meas, X_clean, kc_true, kappai_true = lorentzian_generator(
         n_samples=3,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
@@ -243,7 +251,6 @@ if __name__ == "__main__":
 
     plt.show()  
 
-    """ i = 2
     F = f.shape[0]
 
     I = X_meas[i, :F]      # Parte real → I
@@ -263,4 +270,6 @@ if __name__ == "__main__":
     ax = plt.gca()
     ax.tick_params(direction='in', which='both')
 
-    plt.show() """
+    plt.show() 
+
+    
