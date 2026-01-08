@@ -1,29 +1,32 @@
 import numpy as np
 from lorentzian import lorentzian as lorentzian_cy
 import matplotlib.pyplot as plt
-from sctlib.analysis import Trace
-
 
 def _random_poly_response(x: np.ndarray,
                           deg_min: int = 1,
                           deg_max: int = 5,
-                          coeff_scale: float = 0.25,
-                          ensure_positive: bool = False) -> np.ndarray:
+                          coeff_scale: float = 0.25
+                          ) -> np.ndarray:
+    
+    # Removed ensure_positive. Magnitude always positive.
     
     deg = int(np.random.randint(deg_min, deg_max + 1))
     coef = np.random.normal(0.0, coeff_scale, size=deg + 1)
-    coef[0] = 1.0
+    coef[0] = 0.0
 
     a = np.zeros_like(x, dtype=np.float64)
     xp = np.ones_like(x, dtype=np.float64)
     for k in range(deg + 1):
         a += coef[k] * xp
         xp *= x
-
-    if ensure_positive:
-        a = a - np.min(a)
-        a = 0.2 + a
-
+    
+    # In this way, the polynomial is always positive (NEW)
+    a = np.exp(a)
+    
+    # if ensure_positive:
+    #     a = a - np.min(a)
+    #     a = 0.2 + a
+        
     a = a / (np.mean(np.abs(a)) + 1e-12)
     return a
 
@@ -50,7 +53,6 @@ def _apply_random_poly_to_magnitude_only(
         deg_min=poly_deg_range[0],
         deg_max=poly_deg_range[1],
         coeff_scale=poly_coeff_scale,
-        ensure_positive=False,
     )
 
     mag2 = mag * a
@@ -74,6 +76,10 @@ def lorentzian_generator(
     X_clean = np.empty((n_samples, 2 * frequency_points), dtype=np.float32)
 
     for i, kc in enumerate(kc_true):
+        
+        print(i)
+
+        
         ac = float(np.exp(np.random.uniform(np.log(cavity_params["ac"][0]),
                                             np.log(cavity_params["ac"][1]))))
         dt = float(np.random.uniform(*cavity_params["dt"]))
@@ -81,7 +87,7 @@ def lorentzian_generator(
         dphi = float(np.random.uniform(*cavity_params["dphi"]))
 
         kappai = float(np.exp(np.random.uniform(np.log(cavity_params["kappai"][0]),
-                                                np.log(kc_limits[1] * 5))))
+                                                np.log(cavity_params["kappai"][1]))))
         kappai_true[i] = kappai
 
         phi = float(np.random.uniform(*cavity_params["phi"]))
@@ -89,8 +95,19 @@ def lorentzian_generator(
         kc = float(kc)
         kappa = kappai + kc
         r = kc / kappa
-
-        delta_f_max = 100 * kc_limits[1] + kappai
+        
+        print('ac', ac)
+        print('kappac', kc)
+        print('kappai', kappai)
+        print('dt', dt)
+        print('phi0', phi)
+        print('r', r)
+        print('dphi', dphi)
+        print('fr', fr)
+        
+        # NEW: Changed ka_limits[1] with kappa. The actual value.
+        nRange = np.random.uniform(100, 500)
+        delta_f_max = nRange * kappa
         f = np.linspace(fr - delta_f_max, fr + delta_f_max, frequency_points, dtype=np.float64)
 
         s0 = lorentzian_cy(f, ac, dt, phi, r, kappa, dphi, fr)
@@ -131,12 +148,12 @@ def lorentzian_generator(
 
 if __name__ == "__main__":
     cavity_params = {
-        "ac":     (0.3, 1.8),
-        "dt":     (-1e-7, 0),
-        "phi":    (0, 1e5),
-        "dphi":   (-np.pi/4, np.pi/4),
-        "kappai": (1e4, 1e6),
-        "fr":     (7.30e8 - 2e6, 7.50e8 + 2e6)
+        "ac"     : (0.3, 1.8),
+        "dt"     : (-1e-7, 0),
+        "phi"    : (-np.pi, np.pi),
+        "dphi"   : (-np.pi/4, np.pi/4),
+        "kappai" : (1e2, 1e5), # NEW: changed parameters to a more physical range.
+        "fr"     : (7.30e8 - 2e6, 7.50e8 + 2e6)
     }
 
     kc_limits = (1e4, 1e5)
@@ -158,10 +175,10 @@ if __name__ == "__main__":
 
     f_GHz = f * 1e-9
 
-    fig, ax = plt.subplots(1, 2, dpi=300, figsize=(12, 4), constrained_layout=True, sharex=True)
+    fig, ax = plt.subplots(2, 1, dpi=300, figsize=(12, 7), constrained_layout=True, sharex=True)
     ax[0].plot(f_GHz, mag, linestyle="--")
     ax[1].plot(f_GHz, phase)
-    ax[0].set_xlabel("Frequency [GHz]")
+    ax[1].set_xlabel("Frequency [GHz]")
     ax[0].set_ylabel("Amplitude")
     ax[1].set_ylabel("Phase [rad]")
     ax[0].set_title(f"Magnitude (kc = {kc_true[i]:.2e})")
