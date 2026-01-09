@@ -2,50 +2,132 @@ import numpy as np
 from lorentzian import lorentzian as lorentzian_cy
 import matplotlib.pyplot as plt
 from sctlib.analysis import Trace
+from sctlib.analysis.trace.support._one_shot_fit import _guess_phase_delay, polyfit_baseline, guess_kappa, guess_amplitude
 
-
-
-def plot_kappa_window_debug(f, I, Q, f_win, I_win, Q_win, info):
+def padder_optimum(
+    trace,
+    *,
+    max_F: int,
+    kappa_guessed: float,
+    order: int,
+    interval: tuple[float, float] | None = None,
+    # extensión de frecuencia
+    keep_df: bool = True,
+    df_override: float | None = None,
+    return_debug: bool = False,
+):
     """
-    Visualiza la traza completa y la ventana recortada por padder_half_kappa_window.
+    Padding "optimum":
+      1) Calcula p(f) con polyfit_baseline y phase_delay con _guess_phase_delay
+      2) Extiende f hasta max_F
+      3) Rellena s desde Fi..max_F usando la prolongación del padder:
+            padder_ext(f) = p_ext(f) * exp(j*(delay*f + phi0))
+         y una base constante s_base.
+
+    Returns
+    -------
+    f_pad : (max_F,)
+    I_pad : (max_F,)
+    Q_pad : (max_F,)
+    mask  : (max_F,)  (1.0 real, 0.0 padding)
     """
-    amp = np.sqrt(I**2 + Q**2)
-    amp_win = np.sqrt(I_win**2 + Q_win**2)
 
-    idx_min = info["idx_min"]
-    idx_left = info["idx_left"]
-    idx_right = info["idx_right"]
-    A_base = info["A_base"]
-    A_min = info["A_min"]
-    A_half = info["A_half"]
+    f = np.asarray(trace.frequency, dtype=np.float64)
+    s = np.asarray(trace.trace, dtype=np.complex128)
+    Fi = f.size
 
-    plt.figure(figsize=(10, 4.5), dpi=200)
+    if Fi < 3:
+        raise ValueError("Trace demasiado corta para padder_optimum (Fi < 3).")
+    if Fi > max_F:
+        raise ValueError(f"Fi ({Fi}) > max_F ({max_F}).")
+    if kappa_guessed is None:
+        raise ValueError("Debes pasar kappa_guessed para polyfit_baseline.")
 
-    # Traza completa
-    plt.plot(f, amp, color="gray", alpha=0.6, label="|S21| completo")
+    # Phase delay
+    delay_guessed, delayAtZero_guessed = _guess_phase_delay(trace)
+    phase_delay = np.exp(1j * (delay_guessed * f + delayAtZero_guessed))
 
-    # Ventana recortada
-    plt.plot(f_win, amp_win, color="crimson", linewidth=2.2, label="Ventana recortada")
+    if interval is None:
+        raise ValueError("Debes pasar interval=(f_min, f_max) en Hz (fuera del dip).")
 
-    # Líneas horizontales
-    plt.axhline(A_base, color="black", linestyle="--", linewidth=1.2, label="Baseline")
-    if A_half is not None:
-        plt.axhline(A_half, color="blue", linestyle=":", linewidth=1.2, label="Nivel mitad")
+    amplitude_base, p = polyfit_baseline(
+        trace,
+        kappa_guessed,
+        order=int(order),
+        interval=float(interval),   
+        save=False,
+        verbose=False,
+        plot=False,
+        standalone=False,
+    )
 
-    # Marcas verticales
-    plt.axvline(f[idx_left], color="green", linestyle="--", linewidth=1.2, label="Corte izq.")
-    plt.axvline(f[idx_right], color="green", linestyle="--", linewidth=1.2, label="Corte der.")
+    poly = np.asarray(amplitude_base, dtype=np.float64)
 
-    # Mínimo
-    plt.scatter(f[idx_min], A_min, color="black", zorder=5, label="Mínimo")
+    padder_real = poly * phase_delay  
 
-    plt.xlabel("Frequency [Hz]")
-    plt.ylabel("|S21|")
-    plt.title("Ventana alrededor del dip (κ aproximado)")
-    plt.legend(frameon=False)
-    plt.grid(alpha=0.2)
-    plt.tight_layout()
-    plt.show()
+    # Padding
+    f_pad = np.empty(max_F, dtype=np.float64)
+    f_pad[:Fi] = f
+
+    if max_F > Fi:
+        if df_override is not None:
+            df = float(df_override)
+        else:
+            if not keep_df:
+                # si no quieres df, por defecto uso el último df
+                df = float(f[-1] - f[-2])
+            else:
+                # df medio 
+                df = float(np.mean(np.diff(f)))
+        f_pad[Fi:] = f[-1] + df * np.arange(1, (max_F - Fi) + 1, dtype=np.float64)
+
+    # Phase delay sobre f_pad
+    phase_delay_ext = np.exp(1j * (delay_guessed * f_pad + delayAtZero_guessed))  # (max_F,)
+
+    # Extiendo p(f)
+    poly_ext = np.empty_like(f_pad, dtype=np.float64)
+    poly_ext[:Fi] = poly
+    poly_ext[Fi:] = poly[-1]   # baseline constante
+
+    padder_ext = poly_ext * phase_delay_ext
+
+    s_corr = np.empty(max_F, dtype=np.complex128)
+    s_corr[:Fi] = s
+
+    # base constante en el "espacio sin padder" (para que continúe suave)
+    eps = 1e-12
+    denom = padder_real[-1]
+    if np.abs(denom) < eps:
+        # fallback: si el padder es ~0, uso el propio valor final como base
+        s_base = s[-1]
+        s_corr[Fi:] = s_base
+    else:
+        s_base = s[-1] / denom
+        s_corr[Fi:] = s_base * padder_ext[Fi:]
+
+    # ---- 7) Salida I/Q y máscara ----
+    I_pad = s_corr.real.astype(np.float64)
+    Q_pad = s_corr.imag.astype(np.float64)
+
+    mask = np.zeros(max_F, dtype=np.float32)
+    mask[:Fi] = 1.0
+
+    if return_debug:
+        debug = dict(
+            Fi=Fi,
+            delay_guessed=float(delay_guessed),
+            delayAtZero_guessed=float(delayAtZero_guessed),
+            kappa_guessed=float(kappa_guessed),
+            poly_real=poly,
+            poly_ext=poly_ext,
+            padder_real=padder_real,
+            padder_ext=padder_ext,
+        )
+        return f_pad, I_pad, Q_pad, mask, debug
+
+    return f_pad, I_pad, Q_pad, mask
+
+
 
 def padder_1db_tail(
     f, I, Q,
@@ -121,113 +203,12 @@ def padder_1db_tail(
     return f_out, I_out, Q_out, mask
 
 
-def padder_half_kappa_window(
-    f: np.ndarray,
-    I: np.ndarray,
-    Q: np.ndarray,
-    baseline_mode: str = "tail_median",
-    tail_frac: float = 0.15,
-    extra_margin_frac: float = 0.30,
-    min_window_pts: int = 128,
-):
-    """
-    Ventana alrededor del dip para fit:
-      1) mínimo de |S21|
-      2) nivel mitad: A_half = A_min + 0.5*(A_base - A_min)
-      3) cruces a izquierda/derecha con A_half
-      4) recorte [left, right] con margen extra
-
-    Parámetros
-    ----------
-    db_floor : si no es None, ignora dips muy poco profundos (ej. 1 dB). En amplitud:
-              profundidad_dB = 20*log10(A_base/A_min).
-    baseline_mode : "tail_median" o "max"
-    tail_frac : fracción final para baseline (si tail_median)
-    extra_margin_frac : margen extra respecto al ancho encontrado (0.30 = 30%)
-    min_window_pts : tamaño mínimo de ventana, por si el dip es raro
-
-    Returns
-    -------
-    f_win, I_win, Q_win, mask_win, info
-    """
-    f = np.asarray(f, dtype=np.float64)
-    I = np.asarray(I, dtype=np.float64)
-    Q = np.asarray(Q, dtype=np.float64)
-    assert f.ndim == I.ndim == Q.ndim == 1
-    assert len(f) == len(I) == len(Q)
-
-    Fi = len(f)
-    amp = np.sqrt(I**2 + Q**2)
-
-    # Baseline
-    if baseline_mode == "tail_median":  #mediana del tail_frc % final
-        n_tail = max(8, int(np.ceil(tail_frac * Fi)))
-        A_base = float(np.median(amp[-n_tail:]))
-    elif baseline_mode == "max":
-        A_base = float(np.max(amp))
-    else:
-        raise ValueError("baseline_mode debe ser 'tail_median' o 'max'")
-
-    idx_min = int(np.argmin(amp))
-    A_min = float(amp[idx_min])
-
-    A_half = A_min + 0.5 * (A_base - A_min)
-
-    # buscar cruce a la izquierda: primer punto (desde el mínimo hacia 0) con amp >= A_half
-    left = idx_min
-    while left > 0 and amp[left] < A_half:
-        left -= 1
-
-    # buscar cruce a la derecha 
-    right = idx_min
-    while right < Fi - 1 and amp[right] < A_half:
-        right += 1
-
-    # fuerza una ventana mínima centrada 
-    if left == 0 and amp[left] < A_half:
-        left = max(0, idx_min - min_window_pts // 2)
-    if right == Fi - 1 and amp[right] < A_half:
-        right = min(Fi - 1, idx_min + min_window_pts // 2)
-
-    # margen extra
-    width = max(1, right - left)
-    extra = int(np.ceil(extra_margin_frac * width))
-
-    left2 = max(0, left - extra)
-    right2 = min(Fi - 1, right + extra)
-
-    # asegurar mínimo de puntos
-    if (right2 - left2 + 1) < min_window_pts:
-        center = idx_min
-        half = min_window_pts // 2
-        left2 = max(0, center - half)
-        right2 = min(Fi - 1, left2 + min_window_pts - 1)
-        left2 = max(0, right2 - min_window_pts + 1)
-
-    f_win = f[left2:right2+1]
-    I_win = I[left2:right2+1]
-    Q_win = Q[left2:right2+1]
-    mask_win = np.ones_like(f_win, dtype=np.float32)
-
-    info = dict(
-        idx_min=idx_min,
-        idx_left=left2,
-        idx_right=right2,
-        A_half=A_half,
-        A_base=A_base,
-        A_min=A_min,
-        approx_width_hz=float(f[right] - f[left]) if 0 <= left < Fi and 0 <= right < Fi else None
-    )
-    return f_win, I_win, Q_win, mask_win, info
-
 def _random_poly_response(x: np.ndarray,
                           deg_min: int = 1,
                           deg_max: int = 5,
                           coeff_scale: float = 0.25
                           ) -> np.ndarray:
-    
-    # Removed ensure_positive. Magnitude always positive.
-    
+        
     deg = int(np.random.randint(deg_min, deg_max + 1))
     coef = np.random.normal(0.0, coeff_scale, size=deg + 1)
     coef[0] = 0.0
@@ -252,7 +233,7 @@ def _random_poly_response(x: np.ndarray,
 def _apply_random_poly_to_magnitude_only(
     f: np.ndarray,
     s: np.ndarray,
-    poly_deg_range: tuple[int, int] = (1, 5),
+    poly_deg_range: int,
     poly_coeff_scale: float = 0.25,
 ) -> np.ndarray:
     
@@ -268,8 +249,8 @@ def _apply_random_poly_to_magnitude_only(
 
     a = _random_poly_response(
         x,
-        deg_min=poly_deg_range[0],
-        deg_max=poly_deg_range[1],
+        deg_min=1,
+        deg_max=5,
         coeff_scale=poly_coeff_scale,
     )
 
@@ -339,9 +320,10 @@ def lorentzian_generator(
 
         s0 = lorentzian_cy(f_i, ac, dt, phi, r, kappa, dphi, fr)
 
+        poly_deg_range=np.random.choice(range(1, 5+1))
         s_clean = _apply_random_poly_to_magnitude_only(
             f_i, s0,
-            poly_deg_range=(1, 5),
+            poly_deg_range=poly_deg_range,
             poly_coeff_scale=np.random.uniform(0.02, 0.06),
         )
 
@@ -366,7 +348,26 @@ def lorentzian_generator(
                 1j*np.random.normal(0.0, sig, size=Fi)
             )
 
-        f_pad, I_clean_pad, Q_clean_pad, _mask_clean = padder_1db_tail(
+        trace_clean = Trace(frequency=f_i, trace=s_clean)
+        trace_meas  = Trace(frequency=f_i, trace=s_meas)
+
+        f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
+            trace_clean,
+            max_F=max_F,
+            kappa_guessed=kappa,
+            order=2,
+            interval=20.0,
+        )
+
+        f_pad, I_meas_pad, Q_meas_pad, _ = padder_optimum(
+            trace_meas,
+            max_F=max_F,
+            kappa_guessed=kappa,
+            order=2,
+            interval=20.0,
+        )
+
+        """ f_pad, I_clean_pad, Q_clean_pad, _mask_clean = padder_1db_tail(
             f_i,
             s_clean.real.astype(np.float64),
             s_clean.imag.astype(np.float64),
@@ -375,26 +376,6 @@ def lorentzian_generator(
             noise_std=pad_noise_std,
         ) 
 
-        f_win, I_win, Q_win, mask_win, info = padder_half_kappa_window(
-            f_i,
-            s_meas.real,
-            s_meas.imag,
-            baseline_mode="tail_median",
-            tail_frac=0.15,
-            extra_margin_frac=0.30,
-            min_window_pts=256,
-        )
-
-        plot_kappa_window_debug(
-            f_i,
-            s_meas.real,
-            s_meas.imag,
-            f_win,
-            I_win,
-            Q_win,
-            info,
-        )
-
         f_pad2, I_meas_pad, Q_meas_pad, _mask_meas = padder_1db_tail(
             f_i,
             s_meas.real.astype(np.float64),
@@ -402,7 +383,7 @@ def lorentzian_generator(
             max_F=max_F,
             db_threshold=pad_db_threshold,
             noise_std=pad_noise_std,
-        )
+        ) """
 
         F[i, :] = f_pad
 
@@ -427,9 +408,6 @@ if __name__ == "__main__":
 
     kc_limits = (1e4, 1e5)
 
-    trace = Trace()
-    trace.load_trace(source="cab")
-    results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=True)
 
     F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
         n_samples=3,
