@@ -4,7 +4,6 @@ import torch.optim as optim
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -19,8 +18,11 @@ def np_to_th(x):
 
 class Net(nn.Module):
     """
-    Arquitectura:
-      Conv1D + GlobalAveragePooling + 3*(Linear + ReLU) + Linear(out)
+    Arquitectura mejorada (multi-escala):
+      3x [Conv1D + BN + ReLU] con downsampling (stride=2 en conv2/conv3)
+      + GlobalAveragePooling
+      + 3*(Linear + ReLU)
+      + Linear(out)
 
     Input esperado:
       - X con shape (N, 2*F) donde la primera mitad es I y la segunda mitad Q
@@ -31,12 +33,13 @@ class Net(nn.Module):
         self,
         input_dim,
         output_dim,
-        n_units=128,          
+        n_units=128,
         epochs=1000,
         loss=nn.MSELoss(),
         lr=1e-3,
-        conv_channels=64,     
-        kernel_size=9,        
+        conv_channels=64,
+        kernel_size=9,
+        dropout=0.10,
     ) -> None:
         super().__init__()
 
@@ -47,9 +50,9 @@ class Net(nn.Module):
         self.output_dim = int(output_dim)
         self.F = self.input_dim // 2
 
-        self.epochs = epochs
+        self.epochs = int(epochs)
         self.loss = loss
-        self.lr = lr
+        self.lr = float(lr)
         self.n_units = int(n_units)
 
         k = int(kernel_size)
@@ -57,21 +60,36 @@ class Net(nn.Module):
             raise ValueError("kernel_size debe ser impar y >= 1 para padding 'same' simple.")
         padding = k // 2
 
-        # Conv1D: 2 canales (I y Q)
-        self.conv = nn.Conv1d(
-            in_channels=2,
-            out_channels=int(conv_channels),
-            kernel_size=k,
-            padding=padding,
-            bias=True,
-        )
+        # Elegimos pirámide de canales a partir de conv_channels (compatibilidad con tu API actual)
+        c3 = int(conv_channels)
+        c2 = max(8, c3 // 2)
+        c1 = max(8, c3 // 4)
+
         self.act = nn.ReLU()
+
+        # Bloque conv 1 (sin downsample)
+        self.conv1 = nn.Conv1d(2, c1, kernel_size=k, padding=padding, stride=1, bias=False)
+        self.bn1 = nn.BatchNorm1d(c1)
+
+        # Bloque conv 2 (downsample)
+        self.conv2 = nn.Conv1d(c1, c2, kernel_size=k, padding=padding, stride=2, bias=False)
+        self.bn2 = nn.BatchNorm1d(c2)
+
+        # Bloque conv 3 (downsample)
+        self.conv3 = nn.Conv1d(c2, c3, kernel_size=k, padding=padding, stride=2, bias=False)
+        self.bn3 = nn.BatchNorm1d(c3)
+
+        # Para compatibilidad con tu training.py que guarda net.conv.out_channels / kernel_size
+        # (esto apuntará a la última conv).
+        self.conv = self.conv3
 
         # Global Average Pooling: (N, C, L) -> (N, C, 1)
         self.gap = nn.AdaptiveAvgPool1d(1)
 
+        self.drop = nn.Dropout(p=float(dropout)) if dropout and dropout > 0 else nn.Identity()
+
         # 3*(Linear + ReLU)
-        self.fc1 = nn.Linear(int(conv_channels), self.n_units)
+        self.fc1 = nn.Linear(c3, self.n_units)
         self.fc2 = nn.Linear(self.n_units, self.n_units)
         self.fc3 = nn.Linear(self.n_units, self.n_units)
 
@@ -90,15 +108,20 @@ class Net(nn.Module):
 
         I = x[:, : self.F]
         Q = x[:, self.F :]
-
         x = torch.stack([I, Q], dim=1)  # (N, 2, F)
 
-        h = self.act(self.conv(h := x))
-        h = self.gap(h).squeeze(-1)     # (N, conv_channels)
+        # Conv blocks
+        h = self.act(self.bn1(self.conv1(x)))
+        h = self.act(self.bn2(self.conv2(h)))
+        h = self.act(self.bn3(self.conv3(h)))
 
-        h = self.act(self.fc1(h))
-        h = self.act(self.fc2(h))
-        h = self.act(self.fc3(h))
+        # GAP
+        h = self.gap(h).squeeze(-1)  # (N, c3)
+
+        # FC head
+        h = self.drop(self.act(self.fc1(h)))
+        h = self.drop(self.act(self.fc2(h)))
+        h = self.drop(self.act(self.fc3(h)))
 
         return self.out(h)
 
@@ -107,7 +130,13 @@ class Net(nn.Module):
         yt = torch.from_numpy(np.asarray(y, dtype=np.float32))
 
         ds = TensorDataset(Xt, yt)
-        dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
+        dl = DataLoader(
+            ds,
+            batch_size=int(batch_size),
+            shuffle=bool(shuffle),
+            drop_last=False,
+            pin_memory=torch.cuda.is_available(),
+        )
 
         optimiser = optim.Adam(self.parameters(), lr=self.lr)
         self.train()
@@ -158,6 +187,7 @@ class NetDiscovery(Net):
         lr=1e-3,
         conv_channels=64,
         kernel_size=9,
+        dropout=0.10,
     ) -> None:
         super().__init__(
             input_dim=input_dim,
@@ -168,8 +198,8 @@ class NetDiscovery(Net):
             lr=lr,
             conv_channels=conv_channels,
             kernel_size=kernel_size,
+            dropout=dropout,
         )
 
         # Mantengo tu parámetro extra por compatibilidad con lo que ya tenías
         self.r = nn.Parameter(data=torch.tensor([0.0], device=DEVICE))
-

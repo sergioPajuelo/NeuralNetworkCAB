@@ -1,9 +1,9 @@
 import traceback
 import matplotlib
-#matplotlib.use("Agg")   # ← NO ventanas (quitar si inference individual)
+matplotlib.use("Agg")   # ← NO ventanas (quitar si inference individual)
 
 import matplotlib.pyplot as plt
-#plt.show = lambda *args, **kwargs: None  
+plt.show = lambda *args, **kwargs: None  
 
 import io
 import numpy as np
@@ -103,7 +103,7 @@ def main():
 
     rel_errors = []
 
-    """ for dat_path in dat_files[80:100]:
+    for dat_path in dat_files[80:100]:
         try:
             # --- One-shot ---
             trace = Trace()
@@ -136,9 +136,9 @@ def main():
 
     print(f"Archivos evaluados: {rel_errors.size}")
     print(f"Error relativo medio log (NN vs one-shot): {rel_errors.mean():.3%}")
-    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}")   """
+    print(f"Desviación típica: {rel_errors.std(ddof=1) if rel_errors.size > 1 else 0.0:.3%}")   
 
-    DAT_PATH = dat_files[5]
+    """ DAT_PATH = dat_files[5]
 
     # Experimental (.dat)
     f_exp, I_exp, Q_exp = load_iq_from_dat(DAT_PATH)
@@ -259,7 +259,7 @@ def main():
 
     print(f"Kc one-shot: {kc_oneshot:.3}")
     print(f"Kc (NN): {kc_nn:.3}")
-    print(f"Error: {abs(kc_nn - kc_oneshot) / kc_oneshot if kc_oneshot > 0 else 0.0:.3%}")
+    print(f"Error: {abs(kc_nn - kc_oneshot) / kc_oneshot if kc_oneshot > 0 else 0.0:.3%}") """
 
 
 if __name__ == "__main__":
