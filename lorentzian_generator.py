@@ -327,6 +327,9 @@ def lorentzian_generator(
 
 
         if save_debug_dataset:
+            sample_dir = out_dir / f"sample_{i:03d}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+
             tag = _kc_tag(float(kc_true[i]))
 
             Fi_local = int(F_len[i])
@@ -352,7 +355,7 @@ def lorentzian_generator(
             plt.title(f"Phase (kc = {kc_true[i]:.2e})")
             plt.gca().tick_params(direction="in", which="both")
             plt.tight_layout()
-            plt.savefig(out_dir / f"phase_{tag}.png")
+            plt.savefig(sample_dir / "phase.png")
             plt.close()
 
             # Plot AMP_{kc}.png 
@@ -363,7 +366,7 @@ def lorentzian_generator(
             plt.title(f"Amp (kc = {kc_true[i]:.2e})")
             plt.gca().tick_params(direction="in", which="both")
             plt.tight_layout()
-            plt.savefig(out_dir / f"Amp_{tag}.png")
+            plt.savefig(sample_dir / "Amp.png")
             plt.close()
 
             # Plot IQ_{kc}.png (FULL f)
@@ -379,11 +382,11 @@ def lorentzian_generator(
             plt.axis("equal")
             plt.gca().tick_params(direction="in", which="both")
             plt.tight_layout()
-            plt.savefig(out_dir / f"IQ_{tag}.png")
+            plt.savefig(sample_dir / "IQ.png")
             plt.close()
 
             # Params_{kc}.dat
-            params_path = out_dir / f"Params_{tag}.dat"
+            params_path = sample_dir / "Params.dat"
             with open(params_path, "w", encoding="utf-8") as fp:
                 fp.write(f"i={i}\n")
                 fp.write(f"Fi={Fi_local}\n")
