@@ -65,7 +65,11 @@ def make_experimental_dataset(
     baseline=(3, 0.7),
     limit_files: int | None = None,
 ):
-    dat_files = sorted(dataset_dir.glob("*.dat"))
+    dat_files = list(dataset_dir.glob("*.dat"))
+
+    rng = np.random.default_rng(seed=42)  
+    rng.shuffle(dat_files)
+
     if limit_files is not None:
         dat_files = dat_files[: int(limit_files)]
 
