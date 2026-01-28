@@ -138,21 +138,39 @@ class Net(nn.Module):
 
         I = x[:, :self.F]
         Q = x[:, self.F:2*self.F]
-        M = x[:, 2*self.F:3*self.F]      # mask
+        M = x[:, 2*self.F:3*self.F]      # mask (N, F)
 
+        # fuerza padding a 0 
         I = I * M
         Q = Q * M
 
         x = torch.stack([I, Q, M], dim=1)  # (N, 3, F)
 
-        h = self.stem(x)
-        h = self.block1(h)
-        h = self.block2(h)
-        h = self.block3(h)
+        h = self.stem(x)    # (N, c1, L1)   L1 ~ F/2
+        h = self.block1(h)  # (N, c2, L1)
+        h = self.block2(h)  # (N, c3, L2)   L2 ~ F/4
+        h = self.block3(h)  # (N, c4, L3)   L3 ~ F/8
 
-        h_avg = self.gap(h).squeeze(-1)
-        h_max = self.gmp(h).squeeze(-1)
-        h = torch.cat([h_avg, h_max], dim=1)
+        m = M.unsqueeze(1)  # (N,1,F)
+        m = torch.nn.functional.max_pool1d(m, kernel_size=2, stride=2)  # -> ~F/2 (stem)
+        m = torch.nn.functional.max_pool1d(m, kernel_size=2, stride=2)  # -> ~F/4 (block2)
+        m = torch.nn.functional.max_pool1d(m, kernel_size=2, stride=2)  # -> ~F/8 (block3)
+
+        if m.shape[-1] != h.shape[-1]:
+            L = min(m.shape[-1], h.shape[-1])
+            m = m[..., :L]
+            h = h[..., :L]
+
+        hm = h * m
+        denom = m.sum(dim=-1).clamp_min(1.0)         
+        h_avg = hm.sum(dim=-1) / denom                
+
+
+        neg_inf = torch.finfo(h.dtype).min
+        h_masked = h.masked_fill(m == 0, neg_inf)     # (N,c4,L)
+        h_max = h_masked.max(dim=-1).values           # (N,c4)
+
+        h = torch.cat([h_avg, h_max], dim=1)          # (N, 2*c4)
 
         h = self.drop(self.act(self.fc1(h)))
         h = self.drop(self.act(self.fc2(h)))

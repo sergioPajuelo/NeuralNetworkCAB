@@ -1,9 +1,9 @@
 import numpy as np
 from lorentzian import lorentzian as lorentzian_cy
 import matplotlib
-matplotlib.use("Agg")
+#matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-plt.show = lambda *args, **kwargs: None  
+#plt.show = lambda *args, **kwargs: None  
 from sctlib.analysis import Trace
 from sctlib.analysis.trace.support._one_shot_fit import _guess_phase_delay, guess_kappa, guess_amplitude
 import os
@@ -272,7 +272,7 @@ def lorentzian_generator(
         kappa = kappai + kc_f
         r = kc_f / kappa
 
-        nRange = np.random.uniform(25, 400)
+        nRange = np.clip(np.random.normal(loc=85, scale=15), 40, 160)
         delta_f_max = nRange * kappa
 
         f_i = np.linspace(fr - delta_f_max, fr + delta_f_max, Fi, dtype=np.float64)
@@ -297,11 +297,20 @@ def lorentzian_generator(
 
         trace_clean = Trace(frequency=f_i, trace=s_clean)
 
-        f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
-            trace_clean,
-            max_F=max_F,
-            order=poly_deg_range,
-        )
+        if Fi != max_F:
+            f_pad = np.zeros(max_F, dtype=np.float64)
+            f_pad[:Fi] = f_i
+            df = float(f_i[-1] - f_i[-2])
+            f_pad[Fi:] = f_i[-1] + df * np.arange(1, max_F - Fi + 1, dtype=np.float64)
+
+            I_clean_pad = np.zeros(max_F, dtype=np.float64)
+            Q_clean_pad = np.zeros(max_F, dtype=np.float64)
+            I_clean_pad[:Fi] = I_clean
+            Q_clean_pad[:Fi] = Q_clean
+        else:
+            f_pad = f_i.astype(np.float64)
+            I_clean_pad = I_clean.astype(np.float64)
+            Q_clean_pad = Q_clean.astype(np.float64)
 
         s_clean_pad = I_clean_pad.astype(np.float64) + 1j * Q_clean_pad.astype(np.float64)
         s_meas_pad = s_clean_pad.copy()
@@ -425,7 +434,7 @@ if __name__ == "__main__":
     kc_limits = (1e4, 1e5)
 
 
-    """ F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
         n_samples=3,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
@@ -513,9 +522,9 @@ if __name__ == "__main__":
     ax.legend(frameon=False)
 
     ax.tick_params(direction="in", which="both", top=True, right=True)
-    plt.show() """
+    plt.show() 
 
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    """ F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
         n_samples=100,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
@@ -523,5 +532,5 @@ if __name__ == "__main__":
         noise_std_signal=(0.0, 0.01),
         save_debug_dataset=True,
         save_dir="Dataset_demo",
-    )
+    ) """
 

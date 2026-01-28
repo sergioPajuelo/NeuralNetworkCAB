@@ -12,6 +12,32 @@ from numpy.polynomial.polyutils import RankWarning
 warnings.simplefilter("ignore", RankWarning)
 import torch.nn as nn
 
+
+def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
+    # X_iq: (N, 2*max_F)   [I|Q]
+    # M:    (N, max_F)     0/1
+    I = X_iq[:, :max_F]
+    Q = X_iq[:, max_F:2*max_F]
+
+    w = M.astype(np.float32)
+    denom = np.sum(w, axis=1, keepdims=True) + eps
+
+    muI = np.sum(I * w, axis=1, keepdims=True) / denom
+    muQ = np.sum(Q * w, axis=1, keepdims=True) / denom
+
+    varI = np.sum(((I - muI) ** 2) * w, axis=1, keepdims=True) / denom
+    varQ = np.sum(((Q - muQ) ** 2) * w, axis=1, keepdims=True) / denom
+
+    stdI = np.sqrt(varI + eps)
+    stdQ = np.sqrt(varQ + eps)
+
+    I_n = (I - muI) / stdI
+    Q_n = (Q - muQ) / stdQ
+
+    X_iq_n = np.concatenate([I_n, Q_n], axis=1).astype(np.float32)
+    return X_iq_n
+
+
 def main():    
 
     cavity_params = {
@@ -26,7 +52,7 @@ def main():
     kc_limits = (1e4, 1e5)
 
     F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
-        n_samples=20000,
+        n_samples=15000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
         frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],     
@@ -55,22 +81,30 @@ def main():
     X_test,  y_test  = X[test_idx],  y[test_idx]
 
     iq_dim = 2 * max_F
-    X_train_iq = X_train[:, :iq_dim]
-    X_train_m  = X_train[:, iq_dim:]          # (N, max_F)
 
-    mu_train  = X_train_iq.mean(axis=1, keepdims=True)
-    std_train = X_train_iq.std(axis=1, keepdims=True) + 1e-8
-    X_train_iq = (X_train_iq - mu_train) / std_train
+    X_train_iq = X_train[:, :iq_dim].copy()
+    X_train_m  = X_train[:, iq_dim:].copy()   # (N, max_F)
+
+    X_train_iq[:, :max_F]          *= X_train_m
+    X_train_iq[:, max_F:2*max_F]   *= X_train_m
+
+    X_train_iq = masked_mean_std_iq(X_train_iq, X_train_m, max_F)
+
+    X_train_iq[:, :max_F]          *= X_train_m
+    X_train_iq[:, max_F:2*max_F]   *= X_train_m
 
     X_train = np.concatenate([X_train_iq, X_train_m], axis=1).astype(np.float32)
 
-    # Test
-    X_test_iq = X_test[:, :iq_dim]
-    X_test_m  = X_test[:, iq_dim:]
+    X_test_iq = X_test[:, :iq_dim].copy()
+    X_test_m  = X_test[:, iq_dim:].copy()
 
-    mu_test  = X_test_iq.mean(axis=1, keepdims=True)
-    std_test = X_test_iq.std(axis=1, keepdims=True) + 1e-8
-    X_test_iq = (X_test_iq - mu_test) / std_test
+    X_test_iq[:, :max_F]           *= X_test_m
+    X_test_iq[:, max_F:2*max_F]    *= X_test_m
+
+    X_test_iq = masked_mean_std_iq(X_test_iq, X_test_m, max_F)
+
+    X_test_iq[:, :max_F]           *= X_test_m
+    X_test_iq[:, max_F:2*max_F]    *= X_test_m
 
     X_test = np.concatenate([X_test_iq, X_test_m], axis=1).astype(np.float32)
 

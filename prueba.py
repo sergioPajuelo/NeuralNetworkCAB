@@ -5,8 +5,47 @@ trace.load_trace(source='cab')
 results = trace.do_fit(baseline=(3, 0.7), mode="one-shot", verbose=True)
 print(results["one-shot"].final) """
 
-print("CUDA available:", torch.cuda.is_available())
-print("CUDA device count:", torch.cuda.device_count())
+import numpy as np
+
+def inspect_trace_centering(dat_path):
+    data = np.genfromtxt(dat_path, comments="#")
+
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    data = data[:, :3]
+
+    f = data[:, 0].astype(np.float64)
+    I = data[:, 1].astype(np.float64)
+    Q = data[:, 2].astype(np.float64)
+
+    m = np.isfinite(f) & np.isfinite(I) & np.isfinite(Q)
+    f, I, Q = f[m], I[m], Q[m]
+
+    if f.size < 2:
+        print("Muy pocos puntos válidos tras filtrar NaNs.")
+        return
+
+    order = np.argsort(f)
+    f, I, Q = f[order], I[order], Q[order]
+
+    amp = np.sqrt(I**2 + Q**2)
+
+    # notch = mínimo de amplitud
+    idx_min = int(np.argmin(amp))
+    N = len(f)
+
+    print("\n--- Trace centering inspection ---")
+    print(f"N points (valid): {N}")
+    print(f"f_min      = {f[0]:.6e} Hz")
+    print(f"f_max      = {f[-1]:.6e} Hz")
+    print(f"f_notch    = {f[idx_min]:.6e} Hz")
+    print(f"index_min  = {idx_min}")
+    print(f"center_idx = {N//2}")
+    print(f"offset     = {idx_min - N//2} points")
+    print(f"offset %   = {(idx_min - N//2)/N*100:.2f}%")
+
+inspect_trace_centering("Experimental_Validation_Dataset/Line1_CrossPolCheck_LER3_IQmeas_PDUT-86.0dBm_T100.0mK_Tbb4.5K_0.73345GHzto0.73695GHz_Rate1.0e+06_Sample1000000_BW1.0Hz_Navg1_RF0dBm_LO0dBm.dat")
+
 
 """ import numpy as np
 import matplotlib.pyplot as plt

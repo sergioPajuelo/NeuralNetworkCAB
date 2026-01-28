@@ -13,7 +13,6 @@ from pathlib import Path
 from lorentzian import lorentzian as lorentzian_cy
 from network import Net
 from sctlib.analysis import Trace
-from lorentzian_generator import padder_optimum
 
 
 def load_trained_model(model_path: str) -> tuple[Net, dict]:
@@ -59,29 +58,69 @@ def load_iq_from_dat(dat_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]
     return f[order], I[order], Q[order]
 
 
+def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
+    I = X_iq[:, :max_F]
+    Q = X_iq[:, max_F:2*max_F]
+
+    w = M.astype(np.float32)
+    denom = np.sum(w, axis=1, keepdims=True) + eps
+
+    muI = np.sum(I * w, axis=1, keepdims=True) / denom
+    muQ = np.sum(Q * w, axis=1, keepdims=True) / denom
+
+    varI = np.sum(((I - muI) ** 2) * w, axis=1, keepdims=True) / denom
+    varQ = np.sum(((Q - muQ) ** 2) * w, axis=1, keepdims=True) / denom
+
+    stdI = np.sqrt(varI + eps)
+    stdQ = np.sqrt(varQ + eps)
+
+    I_n = (I - muI) / stdI
+    Q_n = (Q - muQ) / stdQ
+
+    return np.concatenate([I_n, Q_n], axis=1).astype(np.float32)
+
 
 def build_nn_input_from_dat_iqm(trace: Trace, dat_path: str, input_dim: int) -> np.ndarray:
     """
-    Input para la NN como [I || Q || M] (igual que fine-tuning).
+    Input para la NN como [I || Q || M], con:
+      - padding = 0
+      - mask = 1 en puntos reales
+      - normalización masked (idéntica a training)
     """
     if input_dim % 3 != 0:
         raise ValueError("input_dim debe ser múltiplo de 3 (I||Q||M).")
 
     max_F = input_dim // 3
 
-    # trace ya viene cargado con trace.load_trace(...)
-    f_pad, I_pad, Q_pad, M = padder_optimum(trace, max_F=max_F)
+    f, I, Q = load_iq_from_dat(dat_path)
 
-    I_pad = np.asarray(I_pad, dtype=np.float32)
-    Q_pad = np.asarray(Q_pad, dtype=np.float32)
-    M     = np.asarray(M,     dtype=np.float32)
+    Fi = len(f)
 
-    iq = np.concatenate([I_pad, Q_pad], axis=0)  # (2*max_F,)
-    mu = iq.mean()
-    std = iq.std() + 1e-8
-    iq = (iq - mu) / std
+    if Fi > max_F:
+        f = f[:max_F]
+        I = I[:max_F]
+        Q = Q[:max_F]
+        Fi = max_F
 
-    X = np.concatenate([iq, M], axis=0).astype(np.float32)[None, :]  # (1, 3*max_F)
+    I_pad = np.zeros(max_F, dtype=np.float32)
+    Q_pad = np.zeros(max_F, dtype=np.float32)
+    M     = np.zeros(max_F, dtype=np.float32)
+
+    I_pad[:Fi] = I.astype(np.float32)
+    Q_pad[:Fi] = Q.astype(np.float32)
+    M[:Fi] = 1.0
+
+    I_pad *= M
+    Q_pad *= M
+
+    X_iq = np.concatenate([I_pad, Q_pad], axis=0)[None, :]     # (1, 2*max_F)
+    X_m  = M[None, :]                                          # (1, max_F)
+    X_iq = masked_mean_std_iq(X_iq, X_m, max_F)                # (1, 2*max_F)
+
+    X_iq[:, :max_F]        *= X_m
+    X_iq[:, max_F:2*max_F] *= X_m
+
+    X = np.concatenate([X_iq[0], M], axis=0).astype(np.float32)[None, :]  # (1, 3*max_F)
     return X
 
 def predict_kc_nn(net: Net, X: np.ndarray) -> float:
@@ -91,8 +130,8 @@ def predict_kc_nn(net: Net, X: np.ndarray) -> float:
 
 
 def main():
-    MODEL_BASE = "kc_predictor.pt"
-    MODEL_FT   = "kc_predictor_finetuned.pt"
+    MODEL_BASE = "kc_predictor.pt"      # MODELO NORMAL (BASE)
+    MODEL_FT   = "kc_predictor_finetuned.pt"    #MODELO CON FINE-TUNING
 
     DATASET_DIR = Path("Experimental_Validation_Dataset")
 
@@ -114,22 +153,21 @@ def main():
     rel_errors_ft = []
     pct_errors_base = []
     pct_errors_ft   = []
-    freq_errors=[]
+    ok_paths = []
+    kc_oneshot_list = []
+
 
     for dat_path in dat_files[:100]:
         try:
-            f_raw, _, _ = load_iq_from_dat(dat_path)
-            Fi = len(f_raw)
             # --- One-shot ---
             trace = Trace()
             trace.load_trace(source="CAB", path=str(dat_path))
-            f_trace,trace_I,trace_Q,_=padder_optimum(trace, max_F=20000)
-            trace.trace= trace_I + 1j*trace_Q
-            trace.frequency = f_trace
             results = trace.do_fit(mode="one-shot", baseline=(3, 0.7), verbose=False)
             plt.close("all")
             fit = results["one-shot"].final
             kc_oneshot = float(fit["kappac"])
+            if np.isfinite(kc_oneshot) and kc_oneshot > 0:
+                kc_oneshot_list.append(kc_oneshot)
 
             # --- NN ---
             X_real = build_nn_input_from_dat_iqm(trace, str(dat_path), input_dim=input_dim)
@@ -144,6 +182,7 @@ def main():
                 pct_ft   = abs(kc_ft   - kc_oneshot) / kc_oneshot * 100.0
                 rel_errors_base.append(err_base)
                 rel_errors_ft.append(err_ft)
+                ok_paths.append(dat_path)
                 pct_errors_base.append(pct_base)
                 pct_errors_ft.append(pct_ft)
 
@@ -161,16 +200,82 @@ def main():
 
     print(f"Archivos evaluados: {rel_errors_base.size}")
     print(f"BASE mean |Δlog kc|: {rel_errors_base.mean():.6f}  std: {rel_errors_base.std(ddof=1):.6f}")
-    print(f"FT   mean |Δlog kc|: {rel_errors_ft.mean():.6f}  std: {rel_errors_ft.std(ddof=1):.6f}")
+    #print(f"FT   mean |Δlog kc|: {rel_errors_ft.mean():.6f}  std: {rel_errors_ft.std(ddof=1):.6f}")
 
     print("\n--- % distancia al one-shot (|kc_pred - kc_one| / kc_one) ---")
     print(f"BASE mean %err: {pct_errors_base.mean():.2f}%  std: {pct_errors_base.std(ddof=1):.2f}%")
-    print(f"FT   mean %err: {pct_errors_ft.mean():.2f}%  std: {pct_errors_ft.std(ddof=1):.2f}%")
+    #print(f"FT   mean %err: {pct_errors_ft.mean():.2f}%  std: {pct_errors_ft.std(ddof=1):.2f}%")
+    print(f"BASE pct_errors: {pct_errors_base}")
+    print(f"BASE mean |Δlog kc|: {rel_errors_base}")
 
-    print("\n--- Mejora entre modelo base y fine-tuned ---")
+    kc_oneshot_arr = np.asarray(kc_oneshot_list)
+    print("\n--- Kc one-shot stats (real data) ---")
+    print(f"min   kc_one: {kc_oneshot_arr.min():.3e}")
+    print(f"median kc_one: {np.median(kc_oneshot_arr):.3e}")
+    print(f"max   kc_one: {kc_oneshot_arr.max():.3e}")
+
+    outside = np.mean(
+        (kc_oneshot_arr < 1e4) | (kc_oneshot_arr > 1e5)
+    ) * 100.0
+    print(f"% fuera de [1e4, 1e5]: {outside:.1f}%")
+
+    #print("\n--- Mejora entre modelo base y fine-tuned ---")
     improv = (rel_errors_base.mean() - rel_errors_ft.mean()) / (rel_errors_base.mean() + 1e-12)
-    print(f"Mejora relativa (menor es mejor): {improv:.2%}")
+    #print(f"Mejora relativa (menor es mejor): {improv:.2%}")
     
+
+    top_5_idx = np.argsort(pct_errors_base)[-5:][::-1]
+    
+    print("\n--- Generando plots de los 5 casos de mayor discrepancia ---")
+    
+    for rank, idx in enumerate(top_5_idx):
+        dat_path = ok_paths[idx]
+        
+        f_exp, I_exp, Q_exp = load_iq_from_dat(str(dat_path))
+        amp_exp = np.sqrt(I_exp**2 + Q_exp**2)
+        
+        trace = Trace()
+        trace.load_trace(source="CAB", path=str(dat_path))
+        results = trace.do_fit(mode="one-shot", baseline=(3, 0.7), verbose=False)
+        fit = results["one-shot"].final
+        
+        kc_oneshot = float(fit["kappac"])
+        X_input = build_nn_input_from_dat_iqm(trace, str(dat_path), input_dim=input_dim)
+        kc_nn = predict_kc_nn(net_base, X_input)
+
+        # Reconstrucción de la curva NN para validación visual
+        # Usamos los parámetros del one-shot (fr, phi, etc.) pero sustituimos Kc
+        kappai = float(fit["kappai"])
+        kappa_nn = kappai + kc_nn
+        rc_nn = kc_nn / kappa_nn if kappa_nn > 0 else float(fit["rc"])
+
+        s_nn_curve = lorentzian_cy(
+            f_exp.astype(np.float64),
+            float(fit["a"]), float(fit["dt"]), float(fit["phi0"]),
+            rc_nn, kappa_nn, float(fit["fano"]), float(fit["resonance"])
+        )
+        amp_nn = np.abs(s_nn_curve)
+        amp_oneshot = np.abs(results["one-shot"].tprx)
+
+        # Plotting
+
+        n = min(len(f_exp), len(amp_oneshot))
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=150)
+        ax.scatter(f_exp, amp_exp, s=10, color="black", alpha=0.3, label="Data (Exp)")
+        ax.plot(f_exp[:n], amp_oneshot[:n], 'g--', label="One-shot", lw=2)
+        ax.plot(f_exp, amp_nn, 'r-', label=f"NN (Kc={kc_nn:.2e})", lw=2)
+        
+        ax.set_title(f"Discrepancia Rank {rank+1} - Archivo: {dat_path.name}")
+        ax.set_xlabel("Frecuencia [Hz]")
+        ax.set_ylabel("Amplitud")
+        ax.legend()
+        
+        # Guardar imagen 
+        plt.savefig(f"discrepancia_top_{rank+1}.png")
+        plt.close()
+        print(f"Guardado: discrepancia_top_{rank+1}.png (Error: {pct_errors_base[idx]:.2f}%)")
+
+
 
     """ DAT_PATH = dat_files[5]
 
