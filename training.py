@@ -65,8 +65,28 @@ def main():
 
     max_F = mask.shape[1]  
     X_iq = X_meas.astype(np.float32)          
-    X_m  = mask.astype(np.float32)            
-    X = np.concatenate([X_iq, X_m], axis=1)
+    X_m  = mask.astype(np.float32)
+
+    #Frequency channel normalised
+    M = X_m.astype(np.float32)            # (N, max_F)
+    Fhz = F.astype(np.float32)            # (N, max_F)
+
+    eps = 1e-8
+    den = M.sum(axis=1, keepdims=True) + eps
+
+    f_center = (Fhz * M).sum(axis=1, keepdims=True) / den
+
+    F_masked = np.where(M > 0, Fhz, np.nan)
+    f_min = np.nanmin(F_masked, axis=1, keepdims=True)
+    f_max = np.nanmax(F_masked, axis=1, keepdims=True)
+    span = np.maximum((f_max - f_min).astype(np.float32), 1.0)
+
+    # normalized frequency - [-1, 1] 
+    f_norm = (Fhz - f_center) / (0.5 * span)
+
+    f_norm = (f_norm * M).astype(np.float32)
+
+    X = np.concatenate([X_iq, X_m, f_norm], axis=1).astype(np.float32)
 
     idx = np.random.permutation(len(X))
     split = int(0.8 * len(X))
@@ -81,9 +101,12 @@ def main():
     X_test,  y_test  = X[test_idx],  y[test_idx]
 
     iq_dim = 2 * max_F
+    m_dim  = max_F
+    f_dim  = max_F
 
     X_train_iq = X_train[:, :iq_dim].copy()
-    X_train_m  = X_train[:, iq_dim:].copy()   # (N, max_F)
+    X_train_m  = X_train[:, iq_dim:iq_dim + m_dim].copy()                 # (N, max_F)
+    X_train_f  = X_train[:, iq_dim + m_dim:iq_dim + m_dim + f_dim].copy() # (N, max_F)
 
     X_train_iq[:, :max_F]          *= X_train_m
     X_train_iq[:, max_F:2*max_F]   *= X_train_m
@@ -93,20 +116,24 @@ def main():
     X_train_iq[:, :max_F]          *= X_train_m
     X_train_iq[:, max_F:2*max_F]   *= X_train_m
 
-    X_train = np.concatenate([X_train_iq, X_train_m], axis=1).astype(np.float32)
+    X_train_f *= X_train_m
+    X_train = np.concatenate([X_train_iq, X_train_m, X_train_f], axis=1).astype(np.float32)
 
     X_test_iq = X_test[:, :iq_dim].copy()
-    X_test_m  = X_test[:, iq_dim:].copy()
+    X_test_m  = X_test[:, iq_dim:iq_dim + m_dim].copy()
+    X_test_f  = X_test[:, iq_dim + m_dim:iq_dim + m_dim + f_dim].copy()
 
-    X_test_iq[:, :max_F]           *= X_test_m
-    X_test_iq[:, max_F:2*max_F]    *= X_test_m
+    X_test_iq[:, :max_F]        *= X_test_m
+    X_test_iq[:, max_F:2*max_F] *= X_test_m
 
     X_test_iq = masked_mean_std_iq(X_test_iq, X_test_m, max_F)
 
-    X_test_iq[:, :max_F]           *= X_test_m
-    X_test_iq[:, max_F:2*max_F]    *= X_test_m
+    X_test_iq[:, :max_F]        *= X_test_m
+    X_test_iq[:, max_F:2*max_F] *= X_test_m
 
-    X_test = np.concatenate([X_test_iq, X_test_m], axis=1).astype(np.float32)
+    X_test_f *= X_test_m
+
+    X_test = np.concatenate([X_test_iq, X_test_m, X_test_f], axis=1).astype(np.float32)
 
     net = Net(
         input_dim=X_train.shape[1],
@@ -144,6 +171,9 @@ def main():
         "conv_channels": net.conv_channels,
         "kernel_size": net.kernel_size,
         "dropout": net.dropout,
+        "n_channels": 4,
+        "max_F": int(max_F),
+        "uses_f_norm": True,
     }, model_path)
 
     print(f"Model saved to {model_path}")

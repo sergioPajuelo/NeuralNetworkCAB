@@ -81,12 +81,12 @@ class Net(nn.Module):
     ) -> None:
         super().__init__()
 
-        if input_dim % 3 != 0:
-            raise ValueError("input_dim debe ser múltiplo de 3 (I || Q || mask).")
+        if input_dim % 4 != 0:
+            raise ValueError("input_dim debe ser múltiplo de 4 (I || Q || mask || f_norm).")
 
         self.input_dim = int(input_dim)
         self.output_dim = int(output_dim)
-        self.F = self.input_dim // 3
+        self.F = self.input_dim // 4
 
         self.epochs = int(epochs)
         self.loss = nn.MSELoss() if loss is None else loss
@@ -107,7 +107,7 @@ class Net(nn.Module):
 
         # Stem con stride=2: baja F rápido y aprende patrones locales robustos
         self.stem = nn.Sequential(
-            nn.Conv1d(3, c1, kernel_size=k, stride=2, padding=(k // 2), bias=False),
+            nn.Conv1d(4, c1, kernel_size=k, stride=2, padding=(k // 2), bias=False),
             nn.BatchNorm1d(c1),
             nn.ReLU(inplace=True),
         )
@@ -136,15 +136,17 @@ class Net(nn.Module):
         if x.shape[1] != self.input_dim:
             raise ValueError(f"Input shape incompatible: esperaba (N, {self.input_dim}), tengo (N, {x.shape[1]}).")
 
-        I = x[:, :self.F]
-        Q = x[:, self.F:2*self.F]
-        M = x[:, 2*self.F:3*self.F]      # mask (N, F)
+        I  = x[:, :self.F]
+        Q  = x[:, self.F:2*self.F]
+        M  = x[:, 2*self.F:3*self.F]          # mask (N, F)
+        Fn = x[:, 3*self.F:4*self.F]          # f_norm (N, F)
 
         # fuerza padding a 0 
         I = I * M
         Q = Q * M
+        Fn = Fn * M
 
-        x = torch.stack([I, Q, M], dim=1)  # (N, 3, F)
+        x = torch.stack([I, Q, M, Fn], dim=1)  # (N, 4, F)
 
         h = self.stem(x)    # (N, c1, L1)   L1 ~ F/2
         h = self.block1(h)  # (N, c2, L1)

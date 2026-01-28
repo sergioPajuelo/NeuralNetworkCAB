@@ -79,21 +79,76 @@ def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
 
     return np.concatenate([I_n, Q_n], axis=1).astype(np.float32)
 
-
-def build_nn_input_from_dat_iqm(trace: Trace, dat_path: str, input_dim: int) -> np.ndarray:
+def diagnostic_span_correlation(ok_paths, pct_errors_base):
     """
-    Input para la NN como [I || Q || M], con:
+    Calcula el span de frecuencia de cada archivo y lo correlaciona con el error.
+    """
+    spans = []
+    
+    print("\n--- Iniciando diagnóstico de Correlación Error vs Span ---")
+    
+    for dat_path in ok_paths:
+        try:
+            # Usamos skip_header=1 para saltar la línea 'Freq(Hz) I Q'
+            # o mejor aún, reaprovechamos tu función que ya maneja esto:
+            f, _, _ = load_iq_from_dat(str(dat_path))
+            f_span = f.max() - f.min()
+            spans.append(f_span)
+        except Exception as e:
+            print(f"Error procesando {dat_path}: {e}")
+            continue
+    
+    spans = np.array(spans)
+    errors = np.array(pct_errors_base)
+
+    if len(spans) != len(errors):
+        # Ajustamos por si algún archivo falló al cargar
+        errors = errors[:len(spans)]
+
+    # --- Generación del Gráfico ---
+    plt.figure(figsize=(10, 6), dpi=150)
+    plt.scatter(spans / 1e6, errors, color='blue', alpha=0.6, edgecolors='k', label="Datos Reales")
+    
+    if len(spans) > 1:
+        # Ajuste polinómico para ver la tendencia
+        z = np.polyfit(spans / 1e6, errors, 1)
+        p = np.poly1d(z)
+        plt.plot(spans / 1e6, p(spans / 1e6), "r--", alpha=0.8, label="Tendencia")
+
+    plt.title("Diagnóstico: ¿El error depende del Span (Zoom)?")
+    plt.xlabel("Span de Frecuencia [MHz]")
+    plt.ylabel("Error Relativo (%)")
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    
+    plt.savefig("diagnostico_error_vs_span.png")
+    print(f"Gráfico guardado en: diagnostico_error_vs_span.png")
+    
+    correlation = np.corrcoef(spans, errors)[0, 1]
+    print(f"Coeficiente de correlación de Pearson: {correlation:.4f}")
+    
+    if correlation < -0.4:
+        print("\n[CONFIRMADO]: Existe una correlación negativa clara.")
+        print("A menor span (más zoom), mayor es el error. La red no entiende la escala.")
+    else:
+        print("\n[ANÁLISIS]: La correlación no es determinante.")
+
+
+
+def build_nn_input_from_dat_iqmf(trace: Trace, dat_path: str, input_dim: int) -> np.ndarray:
+    """
+    Input para la NN como [I || Q || M || f_norm], con:
       - padding = 0
       - mask = 1 en puntos reales
-      - normalización masked (idéntica a training)
+      - normalización masked de IQ (idéntica a training)
+      - f_norm = (f - f_center) / (span/2) (mask-aware), padding apagado
     """
-    if input_dim % 3 != 0:
-        raise ValueError("input_dim debe ser múltiplo de 3 (I||Q||M).")
+    if input_dim % 4 != 0:
+        raise ValueError("input_dim debe ser múltiplo de 4 (I||Q||M||f_norm).")
 
-    max_F = input_dim // 3
+    max_F = input_dim // 4
 
     f, I, Q = load_iq_from_dat(dat_path)
-
     Fi = len(f)
 
     if Fi > max_F:
@@ -102,25 +157,46 @@ def build_nn_input_from_dat_iqm(trace: Trace, dat_path: str, input_dim: int) -> 
         Q = Q[:max_F]
         Fi = max_F
 
+    # --- padding ---
     I_pad = np.zeros(max_F, dtype=np.float32)
     Q_pad = np.zeros(max_F, dtype=np.float32)
     M     = np.zeros(max_F, dtype=np.float32)
+    F_pad = np.zeros(max_F, dtype=np.float32)
 
     I_pad[:Fi] = I.astype(np.float32)
     Q_pad[:Fi] = Q.astype(np.float32)
+    F_pad[:Fi] = f.astype(np.float32)
     M[:Fi] = 1.0
 
+    # --- f_norm (mask-aware) ---
+    eps = 1e-8
+    den = float(M.sum()) + eps
+    f_center = float((F_pad * M).sum() / den)
+
+    # span mask-aware (min/max solo en zona real)
+    f_real = F_pad[:Fi]
+    f_min = float(np.min(f_real)) if Fi > 0 else 0.0
+    f_max = float(np.max(f_real)) if Fi > 0 else 1.0
+    span = max(f_max - f_min, 1.0)
+
+    f_norm = (F_pad - f_center) / (0.5 * span)
+    f_norm = (f_norm * M).astype(np.float32)  # apaga padding
+
+    # --- IQ masked + normalize like training ---
     I_pad *= M
     Q_pad *= M
 
-    X_iq = np.concatenate([I_pad, Q_pad], axis=0)[None, :]     # (1, 2*max_F)
-    X_m  = M[None, :]                                          # (1, max_F)
-    X_iq = masked_mean_std_iq(X_iq, X_m, max_F)                # (1, 2*max_F)
+    X_iq = np.concatenate([I_pad, Q_pad], axis=0)[None, :]  # (1, 2*max_F)
+    X_m  = M[None, :]                                       # (1, max_F)
 
+    X_iq = masked_mean_std_iq(X_iq, X_m, max_F)             # (1, 2*max_F)
+
+    # re-apaga padding
     X_iq[:, :max_F]        *= X_m
     X_iq[:, max_F:2*max_F] *= X_m
 
-    X = np.concatenate([X_iq[0], M], axis=0).astype(np.float32)[None, :]  # (1, 3*max_F)
+    # --- final concat: [IQ | M | f_norm] ---
+    X = np.concatenate([X_iq[0], M, f_norm], axis=0).astype(np.float32)[None, :]  # (1, 4*max_F)
     return X
 
 def predict_kc_nn(net: Net, X: np.ndarray) -> float:
@@ -128,6 +204,35 @@ def predict_kc_nn(net: Net, X: np.ndarray) -> float:
         y_pred = net.predict(X)  
     return float(np.exp(np.asarray(y_pred).reshape(-1)[0]))
 
+
+def get_real_span_from_dat(dat_path):
+    """
+    Calcula el span real de frecuencia (Hz) de una traza experimental (.dat),
+    ignorando cabeceras y usando SOLO los puntos reales.
+    Compatible con archivos con headers tipo:
+      - líneas que empiezan por '#'
+      - filas no numéricas
+    """
+    try:
+        # genfromtxt ignora automáticamente líneas no numéricas
+        data = np.genfromtxt(dat_path, comments="#")
+
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+
+        if data.shape[1] < 1:
+            raise ValueError("No hay columna de frecuencia")
+
+        f = data[:, 0].astype(np.float64)
+        f = f[np.isfinite(f)]
+
+        if f.size < 2:
+            raise ValueError("Muy pocos puntos válidos")
+
+        return float(f.max() - f.min())
+
+    except Exception as e:
+        raise RuntimeError(f"Error calculando span en {dat_path}: {e}")
 
 def main():
     MODEL_BASE = "kc_predictor.pt"      # MODELO NORMAL (BASE)
@@ -155,9 +260,17 @@ def main():
     pct_errors_ft   = []
     ok_paths = []
     kc_oneshot_list = []
-
+    spans = []
 
     for dat_path in dat_files[:100]:
+    
+        try:
+            span = get_real_span_from_dat(dat_path)
+            spans.append(span)
+            print(f"{dat_path.name}: {span/1e6:.3f} MHz")
+        except Exception as e:
+            print(e)
+
         try:
             # --- One-shot ---
             trace = Trace()
@@ -170,7 +283,7 @@ def main():
                 kc_oneshot_list.append(kc_oneshot)
 
             # --- NN ---
-            X_real = build_nn_input_from_dat_iqm(trace, str(dat_path), input_dim=input_dim)
+            X_real = build_nn_input_from_dat_iqmf(trace, str(dat_path), input_dim=input_dim)
 
             kc_base = predict_kc_nn(net_base, X_real)
             kc_ft   = predict_kc_nn(net_ft,   X_real)
@@ -240,7 +353,7 @@ def main():
         fit = results["one-shot"].final
         
         kc_oneshot = float(fit["kappac"])
-        X_input = build_nn_input_from_dat_iqm(trace, str(dat_path), input_dim=input_dim)
+        X_input = build_nn_input_from_dat_iqmf(trace, str(dat_path), input_dim=input_dim)
         kc_nn = predict_kc_nn(net_base, X_input)
 
         # Reconstrucción de la curva NN para validación visual
@@ -275,7 +388,12 @@ def main():
         plt.close()
         print(f"Guardado: discrepancia_top_{rank+1}.png (Error: {pct_errors_base[idx]:.2f}%)")
 
-
+    spans = np.array(spans)
+    print("\n--- Estadísticas span real ---")
+    print(f"min    : {spans.min()/1e6:.3f} MHz")
+    print(f"median : {np.median(spans)/1e6:.3f} MHz")
+    print(f"max    : {spans.max()/1e6:.3f} MHz")
+    #diagnostic_span_correlation(ok_paths, pct_errors_base)
 
     """ DAT_PATH = dat_files[5]
 
