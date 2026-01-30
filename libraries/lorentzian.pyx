@@ -16,6 +16,7 @@ cimport numpy as np
 from libc.math cimport cos, sin
 cimport cython
 
+print("using lorentzian v2.1")
 
 def lorentzian(np.ndarray[np.float64_t, ndim=1] f,
                double ac, double dt, double phi,
@@ -35,9 +36,9 @@ def lorentzian(np.ndarray[np.float64_t, ndim=1] f,
 
     for i in range(N):
         df = f[i] - fr
-        denom = 1j * df + kappa
-        phase = np.exp(1j * (f[i] * dt + phi))
-        term = 1 - r * kappa * np.exp(1j * dphi) / denom
+        denom = 1j * df + kappa/2
+        phase = np.exp(1j * (2 * np.pi * f[i] * dt + phi))
+        term = 1 - r * (kappa/2) * np.exp(1j * dphi) / denom
         out[i] = ac * phase * term
 
     return out

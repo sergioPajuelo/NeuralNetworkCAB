@@ -2,7 +2,7 @@ import os
 import numpy as np
 
 import matplotlib
-matplotlib.use("Agg")
+# matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.show = lambda *args, **kwargs: None  
 
@@ -11,14 +11,17 @@ from pathlib import Path
 from typing import Sequence
 
 # from lorentzian import lorentzian as lorentzian_cy
-from libraries import lorentzian_cy, ParameterLimits, MAX_LENGTH, MIN_LENGTH
+from libraries import lorentzian_cy, ParameterLimits, polysynth 
+from libraries import MAX_LENGTH, MIN_LENGTH
 from sctlib.analysis import Trace
 from sctlib.analysis.trace.support._one_shot_fit import (
                                                     _guess_phase_delay,
                                                     guess_kappa,
                                                     guess_amplitude
                                                     )
+from sctlib.tools import plot as uplt
 
+PATH = os.path.dirname(__file__)
 
 def padder_optimum(
     trace,
@@ -151,63 +154,6 @@ def padder_optimum(
     return f_pad, I_pad, Q_pad, mask
 
 
-
-def _apply_random_poly_to_magnitude_only(
-    f: np.ndarray,
-    s: np.ndarray,
-    poly_deg_range: int,
-    poly_coeff_scale: float = 0.25,
-) -> np.ndarray:
-    
-    f = f.astype(np.float64)
-
-    mag = np.abs(s)
-    phase = np.unwrap(np.angle(s))  
-
-    # eje normalizado [-1,1] para el polinomio
-    f0 = float(np.mean(f))
-    span = float(np.ptp(f)) + 1e-12
-    x = (f - f0) / (span / 2.0)
-
-    a = _random_poly_response(
-        x,
-        deg_min=1,
-        deg_max=5,
-        coeff_scale=poly_coeff_scale,
-    )
-
-    mag2 = mag * a
-
-    return mag2 * np.exp(1j * phase)
-
-
-def _random_poly_response(x: np.ndarray,
-                          deg_min: int = 1,
-                          deg_max: int = 5,
-                          coeff_scale: float = 0.25
-                          ) -> np.ndarray:
-        
-    deg = int(np.random.randint(deg_min, deg_max + 1))
-    coef = np.random.normal(0.0, coeff_scale, size=deg + 1)
-    coef[0] = 0.0
-
-    a = np.zeros_like(x, dtype=np.float64)
-    xp = np.ones_like(x, dtype=np.float64)
-    for k in range(deg + 1):
-        a += coef[k] * xp
-        xp *= x
-    
-    # In this way, the polynomial is always positive (NEW)
-    a = np.exp(a)
-    
-    # if ensure_positive:
-    #     a = a - np.min(a)
-    #     a = 0.2 + a
-        
-    a = a / (np.mean(np.abs(a)) + 1e-12)
-    return a
-
-
 def _kc_tag(kc: float) -> str:
     # Ej: 1.234e+05 -> 1p234e05
     s = f"{kc:.6e}"          
@@ -230,7 +176,10 @@ def lorentzian_generator(
       - Devuelve también F (frecuencias padded), F_len y mask.
     """
     
-    out_dir = Path(save_dir)
+    out_dir = Path(os.path.join(PATH, save_dir))
+    sample_dir = out_dir 
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    
     if save_debug_dataset:
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -249,7 +198,7 @@ def lorentzian_generator(
     progress_marks = {25, 50, 75, 100}
     printed_marks = set()
 
-    for index in range(n_samples + 1):
+    for index in range(n_samples):
         percent = int(100 * (index + 1) / n_samples)
 
         for m in sorted(progress_marks):
@@ -287,30 +236,85 @@ def lorentzian_generator(
                            params['dphi'],
                            params['fr']
                            )
+        
+        y = s0
+        x = f_i
+        # Calculate step sizes between consecutive points
+        dy = np.diff(y)  # Complex differences
+        step_sizes = np.abs(dy)  # Magnitude of change
+        
+        # Find large jumps
+        threshold = 10 * np.median(step_sizes)  # Adaptive threshold
+        large_jumps = np.where(step_sizes > threshold)[0]
+        
+        print(f"Trace #{index}: Large jumps at indices: {large_jumps}")
+        print(f"Corresponding x values: {x[large_jumps] if len(large_jumps) > 0 else 'None'}")
+        
+        # Zoom in around the jump
+        if len(large_jumps) > 0:
+            jump_idx = large_jumps[int(len(large_jumps)/2)]
+            window = 5  # Points to show before/after
+            
+            print(f"\nData around jump at index {jump_idx}:")
+            print("Index | x value | Real | Imag | Magnitude")
+            print("-" * 50)
+            
+            for i in range(max(0, jump_idx-window), min(len(y), jump_idx+window+2)):
+                print(f"{i:5d} | {x[i]:8.4f} | {y.real[i]:8.4f} | {y.imag[i]:8.4f} | {np.abs(y[i]):8.4f}")
+                
+        if np.isnan((abs(s0))).any():
+            print(f"WARNING, trace number {index + 1} presents NaN discontinuities")
+            print(s0)
+            
+        if np.isinf((abs(s0))).any():
+            print(f"WARNING, trace number {index + 1} presents Inf discontinuities")
+            print(s0)
+        
+        if (~np.isfinite(s0.real)).any() or (~np.isfinite(s0.imag)).any():
+            print("BAD: non-finite in complex components")
+            
+        print('Frequency length', len(f_i))    
+        print('Trace length', len(s0))
 
+            
+        sorted_indices = np.argsort(f_i)
+        
         poly_deg_range=np.random.choice(range(1, 5+1))
-        s_clean = _apply_random_poly_to_magnitude_only(
+        
+        s_clean, poly = polysynth(
             f_i, s0,
-            poly_deg_range=poly_deg_range,
+            poly_order = poly_deg_range,
             poly_coeff_scale=np.random.uniform(0.02, 0.06),
         )
-
-        c0 = (np.random.normal(0.0, 0.05) + 1j*np.random.normal(0.0, 0.05))
-        s_clean = s_clean + c0
-
-        eps = np.random.uniform(-0.03, 0.03)
-        I_clean = s_clean.real * (1 + eps)
-        Q_clean = s_clean.imag * (1 - eps)
-        s_clean = I_clean + 1j * Q_clean
-
+        
+        # # Synthetic IQ imbalance(I don't want to use it for the moment).
+        # eps = np.random.uniform(-0.003, 0.003)
+        # I_clean = s_clean.real * (1 + eps)
+        # Q_clean = s_clean.imag * (1 - eps)
+        # s_clean = I_clean + 1j * Q_clean
 
         trace_clean = Trace(frequency=f_i, trace=s_clean)
 
-        f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
-            trace_clean,
-            max_F=MAX_LENGTH,
-            order=poly_deg_range,
-        )
+        try: 
+            f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
+                trace_clean,
+                max_F=MAX_LENGTH,
+                order=poly_deg_range,
+            )
+            
+        except Exception as e:
+            fig, ax = plt.subplots(2,2)
+            ax[1,0].plot(s0.real, s0.imag)
+            ax[1,0].axis('equal')
+            ax[0,0].plot(f_i, abs(s0))
+            ax[0,1].plot(f_i, np.unwrap(np.atan2(s0.imag, s0.real)))
+            ax[0,0].tick_params(which = 'both', direction = 'in')
+            ax[0,1].tick_params(which = 'both', direction = 'in')
+            ax[1,0].tick_params(which = 'both', direction = 'in')
+            ax[1,1].tick_params(which = 'both', direction = 'in')
+            plt.show()
+            print(f'Error while padding trace {index+1}.\nReason: {e}')
+            continue
 
         s_clean_pad = I_clean_pad.astype(np.float64) + 1j * Q_clean_pad.astype(np.float64)
         s_meas_pad = s_clean_pad.copy()
@@ -319,12 +323,6 @@ def lorentzian_generator(
             sig = float(np.random.uniform(noise_std_signal[0], noise_std_signal[1]))
         else:
             sig = float(noise_std_signal)
-
-        if sig > 0.0:
-            s_meas_pad = s_meas_pad + (
-                np.random.normal(0.0, sig, size=MAX_LENGTH) +
-                1j*np.random.normal(0.0, sig, size=MAX_LENGTH)
-            )
 
         F[index, :] = f_pad
 
@@ -336,17 +334,15 @@ def lorentzian_generator(
 
 
         if save_debug_dataset:
-            sample_dir = out_dir / f"sample_{index:03d}"
-            sample_dir.mkdir(parents=True, exist_ok=True)
-
+            file_name = f"sample_{index:03d}"
+ 
             tag = _kc_tag(float(kappac_true[index]))
 
             Fi_local = int(F_len[index])
 
             # Para plots vs frecuencia 
-            f_i_real = F[index, :Fi_local]
-            f_GHz = f_i_real * 1e-9
-
+            f_plot, f_unit, _ = uplt.guess_magnitude_order(F[index, :Fi_local], 'Hz')
+                        
             I_real = X_meas[index, :Fi_local]
             Q_real = X_meas[index, MAX_LENGTH:MAX_LENGTH + Fi_local]
             amp_real = np.sqrt(I_real**2 + Q_real**2)
@@ -355,47 +351,26 @@ def lorentzian_generator(
             # Para IQ: lo que ve la NN (Fmax completo)
             I_full = X_meas[index, :MAX_LENGTH]
             Q_full = X_meas[index, MAX_LENGTH:2*MAX_LENGTH]
-
-            # Plot PHASE_{kc}.png
-            plt.figure(dpi=debug_dpi)
-            plt.plot(f_GHz, phase_real)
-            plt.xlabel("Frequency [GHz]")
-            plt.ylabel("Phase [rad]")
-            plt.title(f"Phase (kc = {kappac_true[index]:.2e})")
-            plt.gca().tick_params(direction="in", which="both")
-            plt.tight_layout()
-            plt.savefig(sample_dir / "phase.png")
+            
+            
+            fig, ax = plt.subplots(2, 2, dpi = debug_dpi, constrained_layout=True)
+            fig.suptitle(f"kappac = {kappac_true[index]:.2e} Hz, kappai = {kappai_true[index]:.2e} Hz")
+            ax[0,0].plot(f_plot[sorted_indices], amp_real[sorted_indices], linestyle="-")
+            ax[0,0].tick_params(direction='in', which='both')
+            ax[0,1].plot(f_plot[sorted_indices], phase_real[sorted_indices], linestyle="-")
+            ax[0,1].tick_params(direction='in', which='both')
+            ax[1,0].plot(I_real[sorted_indices], Q_real[sorted_indices], linestyle="-")
+            ax[1,0].tick_params(direction='in', which='both')
+            ax[1,0].axis('equal')
+            ax[1,1].plot(f_plot[sorted_indices], abs(s0[sorted_indices]), linestyle="-", color='royalblue')
+            ax[1,1].plot(f_plot, abs(params['ac'] * poly), linestyle="--", color='tomato')
+            ax[1,1].tick_params(direction='in', which='both')
+            fig.savefig(sample_dir / file_name)
             plt.close()
-
-            # Plot AMP_{kc}.png 
-            plt.figure(dpi=debug_dpi)
-            plt.plot(f_GHz, amp_real, linestyle="--")
-            plt.xlabel("Frequency [GHz]")
-            plt.ylabel("Amplitude")
-            plt.title(f"Amp (kc = {kappac_true[index]:.2e})")
-            plt.gca().tick_params(direction="in", which="both")
-            plt.tight_layout()
-            plt.savefig(sample_dir / "Amp.png")
-            plt.close()
-
-            # Plot IQ_{kc}.png (FULL f)
-            plt.figure(dpi=debug_dpi)
-            plt.plot(I_full, Q_full, label="IQ (full F)")
-            plt.scatter(I_full[0], Q_full[0], label="Start", zorder=3)
-            if Fi_local > 0:
-                plt.scatter(I_full[Fi_local - 1], Q_full[Fi_local - 1], label="End real", zorder=3)
-            plt.xlabel("I (Re{S21})")
-            plt.ylabel("Q (Im{S21})")
-            plt.title(f"IQ FULL (kc = {kappac_true[index]:.2e})")
-            plt.legend()
-            plt.axis("equal")
-            plt.gca().tick_params(direction="in", which="both")
-            plt.tight_layout()
-            plt.savefig(sample_dir / "IQ.png")
-            plt.close()
+            
 
             # Params_{kc}.dat
-            params_path = sample_dir / "Params.dat"
+            params_path = sample_dir / f"{file_name}_params.dat"
             with open(params_path, "w", encoding="utf-8") as fp:
                 fp.write(f"i={index}\n")
                 fp.write(f"Fi={Fi_local}\n")
@@ -408,16 +383,14 @@ def lorentzian_generator(
                 fp.write(f"dphi={params['dphi']}\n")
                 fp.write(f"phi={params['phi']}\n")
                 fp.write(f"poly_deg_range={int(poly_deg_range)}\n")
-                fp.write(f"eps={eps}\n")
-                fp.write(f"c0_real={float(np.real(c0))}\n")
-                fp.write(f"c0_imag={float(np.imag(c0))}\n")
+                # fp.write(f"eps={eps}\n")
                 fp.write(f"nRange={float(sweep_factor)}\n")
                 fp.write(f"delta_f_max={float(delta_f_max)}\n")
                 fp.write(f"kappa={params['kappa']}\n")
                 fp.write(f"r={params['r']}\n")
                 fp.write(f"noise_std_signal_used={float(sig)}\n")
 
-    return F, X_meas, X_clean, kc_true, kappai_true, F_len, mask
+    return F, X_meas, X_clean, kappac_true, kappai_true, F_len, mask
 
 
 

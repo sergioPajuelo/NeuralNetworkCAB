@@ -5,8 +5,8 @@ import numpy as np
 
 extensions = [
     Extension(
-        name="lorentzian.lorentzian",              # paquete.modulo
-        sources=["lorentzian/lorentzian.pyx"],     # RUTA CORRECTA
+        name="libraries.lorentzian",              # paquete.modulo
+        sources=["libraries/lorentzian.pyx"],      # RUTA CORRECTA
         include_dirs=[np.get_include()],
     )
 ]

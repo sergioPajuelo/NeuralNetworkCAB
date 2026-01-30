@@ -12,8 +12,11 @@ import numpy as np
 from typing       import Final, Dict
 from numpy.random import uniform,randint
 
-MIN_LENGTH  =  1000
-MAX_LENGTH  = 20000
+MIN_LENGTH  = 10000
+MAX_LENGTH  = 40000
+
+MIN_POLY_ORDER = 0
+MAX_POLY_ORDER = 3
 
 
 class ParameterLimits:
@@ -24,7 +27,7 @@ class ParameterLimits:
     
     LEVEL_LOWER_LIMIT     : Final[float] = 0.01      # No units
     LEVEL_UPPER_LIMIT     : Final[float] = 2.0       # No units
-    DELAY_LOWER_LIMIT     : Final[float] = -1e-7     # s
+    DELAY_LOWER_LIMIT     : Final[float] = -5e-8     # s
     DELAY_UPPER_LIMIT     : Final[float] = 0.0       # s
     ZERO_LOWER_LIMIT      : Final[float] = -np.pi    # rad
     ZERO_UPPER_LIMIT      : Final[float] =  np.pi    # rad
@@ -32,15 +35,15 @@ class ParameterLimits:
     LOSSES_UPPER_LIMIT    : Final[float] = 1e5       # Hz
     COUPLING_LOWER_LIMIT  : Final[float] = 1e4       # Hz
     COUPLING_UPPER_LIMIT  : Final[float] = 1e5       # Hz
-    FANO_LOWER_LIMIT      : Final[float] = -np.pi/4  # rad
-    FANO_UPPER_LIMIT      : Final[float] =  np.pi/4  # rad
+    FANO_LOWER_LIMIT      : Final[float] = 0.0       # rad
+    FANO_UPPER_LIMIT      : Final[float] = 0.0       # rad
     RESONANCE_LOWER_LIMIT : Final[float] = 3.0e8     # Hz
     RESONANCE_UPPER_LIMIT : Final[float] = 1.0e9     # Hz
     
     """  ======================================= """
     
     # SWEEP_FACTOR indicates how many times kappa is covered by frequency sweep
-    SWEEP_FACTOR_LOWER_LIMIT : Final[int] = 25
+    SWEEP_FACTOR_LOWER_LIMIT : Final[int] = 101
     SWEEP_FACTOR_UPPER_LIMIT : Final[int] = 401
     
     
