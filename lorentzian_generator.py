@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib
 # matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-plt.show = lambda *args, **kwargs: None  
+#plt.show = lambda *args, **kwargs: None  
 
 
 from pathlib import Path
@@ -396,11 +396,8 @@ def lorentzian_generator(
 
 if __name__ == "__main__":
     
-    """ F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
         n_samples=3,
-        cavity_params=cavity_params,
-        kc_limits=kc_limits,
-        frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],
         noise_std_signal=0.0,
     )
 
@@ -484,12 +481,12 @@ if __name__ == "__main__":
     ax.legend(frameon=False)
 
     ax.tick_params(direction="in", which="both", top=True, right=True)
-    plt.show() """
+    plt.show() 
 
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    """ F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
         n_samples          = 100,
         noise_std_signal   = (0.0, 0.01),
         save_debug_dataset = True,
         save_dir           = "Dataset_demo",
-    )
+    ) """
 
