@@ -51,7 +51,7 @@ def main():
 
     kc_limits = (1e4, 1e5)
 
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
         n_samples=15000,
         cavity_params=cavity_params,
         kc_limits=kc_limits,
@@ -67,32 +67,21 @@ def main():
     X_iq = X_meas.astype(np.float32)          
     X_m  = mask.astype(np.float32)
 
-    #Frequency channel normalised
-    M = X_m.astype(np.float32)            # (N, max_F)
-    Fhz = F.astype(np.float32)            # (N, max_F)
 
-    eps = 1e-8
-    den = M.sum(axis=1, keepdims=True) + eps
+    X = np.concatenate([X_iq, X_m], axis=1).astype(np.float32)
 
-    f_center = (Fhz * M).sum(axis=1, keepdims=True) / den
 
-    F_masked = np.where(M > 0, Fhz, np.nan)
-    f_min = np.nanmin(F_masked, axis=1, keepdims=True)
-    f_max = np.nanmax(F_masked, axis=1, keepdims=True)
-    span = np.maximum((f_max - f_min).astype(np.float32), 1.0)
+    df_scalars = (dfs / 1e6).reshape(-1, 1).astype(np.float32)
 
-    # normalized frequency - [-1, 1] 
-    f_norm = (Fhz - f_center) / (0.5 * span)
-
-    f_norm = (f_norm * M).astype(np.float32)
-
-    X = np.concatenate([X_iq, X_m, f_norm], axis=1).astype(np.float32)
-
+    
     idx = np.random.permutation(len(X))
     split = int(0.8 * len(X))
 
     train_idx = idx[:split]
     test_idx  = idx[split:]
+
+    df_train = df_scalars[train_idx]
+    df_test  = df_scalars[test_idx]
 
     kappai_train = kappai_true[train_idx]
     kappai_test  = kappai_true[test_idx]
@@ -102,26 +91,27 @@ def main():
 
     iq_dim = 2 * max_F
     m_dim  = max_F
-    f_dim  = max_F
 
+    # ---- TRAIN ----
     X_train_iq = X_train[:, :iq_dim].copy()
-    X_train_m  = X_train[:, iq_dim:iq_dim + m_dim].copy()                 # (N, max_F)
-    X_train_f  = X_train[:, iq_dim + m_dim:iq_dim + m_dim + f_dim].copy() # (N, max_F)
+    X_train_m  = X_train[:, iq_dim:iq_dim + m_dim].copy()
 
-    X_train_iq[:, :max_F]          *= X_train_m
-    X_train_iq[:, max_F:2*max_F]   *= X_train_m
+    # aplica máscara antes de calcular mean/std
+    X_train_iq[:, :max_F]        *= X_train_m
+    X_train_iq[:, max_F:2*max_F] *= X_train_m
 
     X_train_iq = masked_mean_std_iq(X_train_iq, X_train_m, max_F)
 
-    X_train_iq[:, :max_F]          *= X_train_m
-    X_train_iq[:, max_F:2*max_F]   *= X_train_m
+    # vuelve a enmascarar para que el pad no meta basura
+    X_train_iq[:, :max_F]        *= X_train_m
+    X_train_iq[:, max_F:2*max_F] *= X_train_m
 
-    X_train_f *= X_train_m
-    X_train = np.concatenate([X_train_iq, X_train_m, X_train_f], axis=1).astype(np.float32)
+    # X final: [IQ_norm, mask]
+    X_train = np.concatenate([X_train_iq, X_train_m], axis=1).astype(np.float32)
 
+    # ---- TEST ----
     X_test_iq = X_test[:, :iq_dim].copy()
     X_test_m  = X_test[:, iq_dim:iq_dim + m_dim].copy()
-    X_test_f  = X_test[:, iq_dim + m_dim:iq_dim + m_dim + f_dim].copy()
 
     X_test_iq[:, :max_F]        *= X_test_m
     X_test_iq[:, max_F:2*max_F] *= X_test_m
@@ -131,9 +121,7 @@ def main():
     X_test_iq[:, :max_F]        *= X_test_m
     X_test_iq[:, max_F:2*max_F] *= X_test_m
 
-    X_test_f *= X_test_m
-
-    X_test = np.concatenate([X_test_iq, X_test_m, X_test_f], axis=1).astype(np.float32)
+    X_test = np.concatenate([X_test_iq, X_test_m], axis=1).astype(np.float32)
 
     net = Net(
         input_dim=X_train.shape[1],
@@ -144,10 +132,10 @@ def main():
         loss=nn.HuberLoss(delta=0.5)
     )
 
-    losses = net.fit(X_train, y_train, batch_size=64)  
+    losses = net.fit(X_train, df_train, y_train, batch_size=64)
 
-    y_pred_train = net.predict(X_train, batch_size=256)
-    y_pred_test  = net.predict(X_test,  batch_size=256)
+    y_pred_train = net.predict(X_train, df_train, batch_size=256)
+    y_pred_test  = net.predict(X_test,  df_test,  batch_size=256)
 
     kc_pred_train = np.exp(y_pred_train).flatten()
     kc_true_train = np.exp(y_train).flatten()
@@ -171,9 +159,9 @@ def main():
         "conv_channels": net.conv_channels,
         "kernel_size": net.kernel_size,
         "dropout": net.dropout,
-        "n_channels": 4,
+        "n_channels": 3,
         "max_F": int(max_F),
-        "uses_f_norm": True,
+        "uses_f_norm": False,
     }, model_path)
 
     print(f"Model saved to {model_path}")

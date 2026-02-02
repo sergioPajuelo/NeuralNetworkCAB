@@ -243,6 +243,7 @@ def lorentzian_generator(
 
     progress_marks = {25, 50, 75, 100}
     printed_marks = set()
+    dfs = np.zeros(n_samples, dtype=np.float32)
 
     for i, kc in enumerate(kc_true):
         percent = int(100 * (i + 1) / n_samples)
@@ -272,10 +273,13 @@ def lorentzian_generator(
         kappa = kappai + kc_f
         r = kc_f / kappa
 
-        nRange = np.clip(np.random.normal(loc=85, scale=15), 40, 160)
+        nRange = np.random.uniform(30, 300)
         delta_f_max = nRange * kappa
 
         f_i = np.linspace(fr - delta_f_max, fr + delta_f_max, Fi, dtype=np.float64)
+
+        df_Hz = float(f_i[1] - f_i[0])  
+        dfs[i] = df_Hz
 
         s0 = lorentzian_cy(f_i, ac, dt, phi, r, kappa, dphi, fr)
 
@@ -417,7 +421,7 @@ def lorentzian_generator(
                 fp.write(f"r={float(r)}\n")
                 fp.write(f"noise_std_signal_used={float(sig)}\n")
 
-    return F, X_meas, X_clean, kc_true, kappai_true, F_len, mask
+    return F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs
 
 
 
