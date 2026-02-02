@@ -12,25 +12,38 @@ from numpy.polynomial.polyutils import RankWarning
 warnings.simplefilter("ignore", RankWarning)
 import torch.nn as nn
 
+
+def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
+    # X_iq: (N, 2*max_F)   [I|Q]
+    # M:    (N, max_F)     0/1
+    I = X_iq[:, :max_F]
+    Q = X_iq[:, max_F:2*max_F]
+
+    w = M.astype(np.float32)
+    denom = np.sum(w, axis=1, keepdims=True) + eps
+
+    muI = np.sum(I * w, axis=1, keepdims=True) / denom
+    muQ = np.sum(Q * w, axis=1, keepdims=True) / denom
+
+    varI = np.sum(((I - muI) ** 2) * w, axis=1, keepdims=True) / denom
+    varQ = np.sum(((Q - muQ) ** 2) * w, axis=1, keepdims=True) / denom
+
+    stdI = np.sqrt(varI + eps)
+    stdQ = np.sqrt(varQ + eps)
+
+    I_n = (I - muI) / stdI
+    Q_n = (Q - muQ) / stdQ
+
+    X_iq_n = np.concatenate([I_n, Q_n], axis=1).astype(np.float32)
+    return X_iq_n
+
+
 def main():    
 
-    cavity_params = {
-        "ac"     : (0.3, 1.8),
-        "dt"     : (-1e-7, 0),
-        "phi"    : (-np.pi, np.pi),
-        "dphi"   : (-np.pi/4, np.pi/4),
-        "kappai" : (1e2, 1e5), 
-        "fr"     : (7.30e8 - 2e6, 7.50e8 + 2e6)
-    }
 
-    kc_limits = (1e4, 1e5)
-
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
-        n_samples=20000,
-        cavity_params=cavity_params,
-        kc_limits=kc_limits,
-        frequency_points=[2000, 5000, 6000, 10000, 15000, 20000],     
-        noise_std_signal=(0.001, 0.03),
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
+        n_samples=15000,
+        noise_std_signal=(0.001, 0.007),
     )
 
     
@@ -39,14 +52,23 @@ def main():
 
     max_F = mask.shape[1]  
     X_iq = X_meas.astype(np.float32)          
-    X_m  = mask.astype(np.float32)            
-    X = np.concatenate([X_iq, X_m], axis=1)
+    X_m  = mask.astype(np.float32)
 
+
+    X = np.concatenate([X_iq, X_m], axis=1).astype(np.float32)
+
+
+    df_scalars = (dfs / 1e6).reshape(-1, 1).astype(np.float32)
+
+    
     idx = np.random.permutation(len(X))
     split = int(0.8 * len(X))
 
     train_idx = idx[:split]
     test_idx  = idx[split:]
+
+    df_train = df_scalars[train_idx]
+    df_test  = df_scalars[test_idx]
 
     kappai_train = kappai_true[train_idx]
     kappai_test  = kappai_true[test_idx]
@@ -55,22 +77,36 @@ def main():
     X_test,  y_test  = X[test_idx],  y[test_idx]
 
     iq_dim = 2 * max_F
-    X_train_iq = X_train[:, :iq_dim]
-    X_train_m  = X_train[:, iq_dim:]          # (N, max_F)
+    m_dim  = max_F
 
-    mu_train  = X_train_iq.mean(axis=1, keepdims=True)
-    std_train = X_train_iq.std(axis=1, keepdims=True) + 1e-8
-    X_train_iq = (X_train_iq - mu_train) / std_train
+    # ---- TRAIN ----
+    X_train_iq = X_train[:, :iq_dim].copy()
+    X_train_m  = X_train[:, iq_dim:iq_dim + m_dim].copy()
 
+    # aplica máscara antes de calcular mean/std
+    X_train_iq[:, :max_F]        *= X_train_m
+    X_train_iq[:, max_F:2*max_F] *= X_train_m
+
+    X_train_iq = masked_mean_std_iq(X_train_iq, X_train_m, max_F)
+
+    # vuelve a enmascarar para que el pad no meta basura
+    X_train_iq[:, :max_F]        *= X_train_m
+    X_train_iq[:, max_F:2*max_F] *= X_train_m
+
+    # X final: [IQ_norm, mask]
     X_train = np.concatenate([X_train_iq, X_train_m], axis=1).astype(np.float32)
 
-    # Test
-    X_test_iq = X_test[:, :iq_dim]
-    X_test_m  = X_test[:, iq_dim:]
+    # ---- TEST ----
+    X_test_iq = X_test[:, :iq_dim].copy()
+    X_test_m  = X_test[:, iq_dim:iq_dim + m_dim].copy()
 
-    mu_test  = X_test_iq.mean(axis=1, keepdims=True)
-    std_test = X_test_iq.std(axis=1, keepdims=True) + 1e-8
-    X_test_iq = (X_test_iq - mu_test) / std_test
+    X_test_iq[:, :max_F]        *= X_test_m
+    X_test_iq[:, max_F:2*max_F] *= X_test_m
+
+    X_test_iq = masked_mean_std_iq(X_test_iq, X_test_m, max_F)
+
+    X_test_iq[:, :max_F]        *= X_test_m
+    X_test_iq[:, max_F:2*max_F] *= X_test_m
 
     X_test = np.concatenate([X_test_iq, X_test_m], axis=1).astype(np.float32)
 
@@ -83,10 +119,10 @@ def main():
         loss=nn.HuberLoss(delta=0.5)
     )
 
-    losses = net.fit(X_train, y_train, batch_size=64)  
+    losses = net.fit(X_train, df_train, y_train, batch_size=64)
 
-    y_pred_train = net.predict(X_train, batch_size=256)
-    y_pred_test  = net.predict(X_test,  batch_size=256)
+    y_pred_train = net.predict(X_train, df_train, batch_size=256)
+    y_pred_test  = net.predict(X_test,  df_test,  batch_size=256)
 
     kc_pred_train = np.exp(y_pred_train).flatten()
     kc_true_train = np.exp(y_train).flatten()
@@ -106,10 +142,12 @@ def main():
         "input_dim": X_train.shape[1],
         "output_dim": 1,
         "n_units": net.n_units,
-        "kc_limits": kc_limits,
         "conv_channels": net.conv_channels,
         "kernel_size": net.kernel_size,
         "dropout": net.dropout,
+        "n_channels": 3,
+        "max_F": int(max_F),
+        "uses_f_norm": False,
     }, model_path)
 
     print(f"Model saved to {model_path}")

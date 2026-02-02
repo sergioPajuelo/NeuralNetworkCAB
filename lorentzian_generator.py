@@ -194,7 +194,7 @@ def lorentzian_generator(
     F     = np.zeros((n_samples, MAX_LENGTH), dtype=np.float64)
     mask  = np.zeros((n_samples, MAX_LENGTH), dtype=np.float32)
 
-
+    dfs = np.zeros(n_samples, dtype=np.float32)
     progress_marks = {25, 50, 75, 100}
     printed_marks = set()
 
@@ -205,7 +205,7 @@ def lorentzian_generator(
             if percent >= m and m not in printed_marks:
                 print(f"{m}% de la generación completado")
                 printed_marks.add(m)
-            
+        
         # Choose one random length for the trace data, stores the length in an
         # auxiliar array F_len, and asigns mask info.
         trace_length           = np.random.randint(MIN_LENGTH, MAX_LENGTH + 1)
@@ -226,6 +226,8 @@ def lorentzian_generator(
                           params['fr'] + delta_f_max, 
                           trace_length, dtype=np.float64)
 
+        df_Hz = float(f_i[1] - f_i[0])
+        dfs[index] = df_Hz
 
         s0 = lorentzian_cy(f_i, 
                            params['ac'],
@@ -247,20 +249,20 @@ def lorentzian_generator(
         threshold = 10 * np.median(step_sizes)  # Adaptive threshold
         large_jumps = np.where(step_sizes > threshold)[0]
         
-        print(f"Trace #{index}: Large jumps at indices: {large_jumps}")
-        print(f"Corresponding x values: {x[large_jumps] if len(large_jumps) > 0 else 'None'}")
+        #print(f"Trace #{index}: Large jumps at indices: {large_jumps}")
+        #print(f"Corresponding x values: {x[large_jumps] if len(large_jumps) > 0 else 'None'}")
         
         # Zoom in around the jump
         if len(large_jumps) > 0:
             jump_idx = large_jumps[int(len(large_jumps)/2)]
             window = 5  # Points to show before/after
             
-            print(f"\nData around jump at index {jump_idx}:")
-            print("Index | x value | Real | Imag | Magnitude")
-            print("-" * 50)
+            #print(f"\nData around jump at index {jump_idx}:")
+            #print("Index | x value | Real | Imag | Magnitude")
+            #print("-" * 50)
             
-            for i in range(max(0, jump_idx-window), min(len(y), jump_idx+window+2)):
-                print(f"{i:5d} | {x[i]:8.4f} | {y.real[i]:8.4f} | {y.imag[i]:8.4f} | {np.abs(y[i]):8.4f}")
+            #for i in range(max(0, jump_idx-window), min(len(y), jump_idx+window+2)):
+                #print(f"{i:5d} | {x[i]:8.4f} | {y.real[i]:8.4f} | {y.imag[i]:8.4f} | {np.abs(y[i]):8.4f}")
                 
         if np.isnan((abs(s0))).any():
             print(f"WARNING, trace number {index + 1} presents NaN discontinuities")
@@ -273,8 +275,8 @@ def lorentzian_generator(
         if (~np.isfinite(s0.real)).any() or (~np.isfinite(s0.imag)).any():
             print("BAD: non-finite in complex components")
             
-        print('Frequency length', len(f_i))    
-        print('Trace length', len(s0))
+        #print('Frequency length', len(f_i))    
+        #print('Trace length', len(s0))
 
             
         sorted_indices = np.argsort(f_i)
@@ -296,11 +298,16 @@ def lorentzian_generator(
         trace_clean = Trace(frequency=f_i, trace=s_clean)
 
         try: 
-            f_pad, I_clean_pad, Q_clean_pad, _ = padder_optimum(
-                trace_clean,
-                max_F=MAX_LENGTH,
-                order=poly_deg_range,
-            )
+            I_clean = s_clean.real
+            Q_clean = s_clean.imag
+
+            I_pad = np.zeros(MAX_LENGTH, dtype=np.float32)
+            Q_pad = np.zeros(MAX_LENGTH, dtype=np.float32)
+
+            I_pad[:trace_length] = I_clean
+            Q_pad[:trace_length] = Q_clean
+
+
             
         except Exception as e:
             fig, ax = plt.subplots(2,2)
@@ -316,7 +323,7 @@ def lorentzian_generator(
             print(f'Error while padding trace {index+1}.\nReason: {e}')
             continue
 
-        s_clean_pad = I_clean_pad.astype(np.float64) + 1j * Q_clean_pad.astype(np.float64)
+        s_clean_pad = I_pad.astype(np.float64) + 1j * Q_pad.astype(np.float64)
         s_meas_pad = s_clean_pad.copy()
 
         if isinstance(noise_std_signal, tuple):
@@ -324,7 +331,14 @@ def lorentzian_generator(
         else:
             sig = float(noise_std_signal)
 
-        F[index, :] = f_pad
+        if sig > 0.0:
+            noise = (
+                np.random.normal(0.0, sig, size=trace_length)
+                + 1j * np.random.normal(0.0, sig, size=trace_length)
+            )
+            s_meas_pad[:trace_length] += noise
+
+        F[index, :trace_length] = f_i
 
         X_clean[index, :MAX_LENGTH] = s_clean_pad.real.astype(np.float32)
         X_clean[index, MAX_LENGTH:2*MAX_LENGTH] = s_clean_pad.imag.astype(np.float32)
@@ -390,15 +404,15 @@ def lorentzian_generator(
                 fp.write(f"r={params['r']}\n")
                 fp.write(f"noise_std_signal_used={float(sig)}\n")
 
-    return F, X_meas, X_clean, kappac_true, kappai_true, F_len, mask
+    return F, X_meas, X_clean, kappac_true, kappai_true, F_len, mask, dfs
 
 
 
 if __name__ == "__main__":
     
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask = lorentzian_generator(
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
         n_samples=3,
-        noise_std_signal=0.0,
+        noise_std_signal=(0.001, 0.007),
     )
 
     i=2
