@@ -12,7 +12,7 @@ import numpy as np
 from typing       import Final, Dict
 from numpy.random import uniform,randint
 
-MIN_LENGTH  = 5000
+MIN_LENGTH  = 7000
 MAX_LENGTH  = 20000
 
 MIN_POLY_ORDER = 0
@@ -22,7 +22,7 @@ HARMONIC_SCALE = 0.05
 MIN_HARM_ORDER = 1
 MAX_HARM_ORDER = 10
 
-GLOBAL_F_SCALE = 10e6
+GLOBAL_F_SCALE = 1e6
 
 
 
@@ -34,12 +34,12 @@ class ParameterLimits:
     
     LEVEL_LOWER_LIMIT     : Final[float] = 0.01      # No units
     LEVEL_UPPER_LIMIT     : Final[float] = 2.0       # No units
-    DELAY_LOWER_LIMIT     : Final[float] = -5e-8     # s
-    DELAY_UPPER_LIMIT     : Final[float] = 0.0       # s
+    DELAY_LOWER_LIMIT     : Final[float] = -5e-7     # s
+    DELAY_UPPER_LIMIT     : Final[float] = -1e-6     # s
     ZERO_LOWER_LIMIT      : Final[float] = -np.pi    # rad
     ZERO_UPPER_LIMIT      : Final[float] =  np.pi    # rad
     LOSSES_LOWER_LIMIT    : Final[float] = 1e2       # Hz
-    LOSSES_UPPER_LIMIT    : Final[float] = 1e5       # Hz
+    LOSSES_UPPER_LIMIT    : Final[float] = 1e4       # Hz
     COUPLING_LOWER_LIMIT  : Final[float] = 1e4       # Hz
     COUPLING_UPPER_LIMIT  : Final[float] = 1e5       # Hz
     FANO_LOWER_LIMIT      : Final[float] = 0.0       # rad

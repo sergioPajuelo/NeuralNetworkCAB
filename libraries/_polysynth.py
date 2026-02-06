@@ -27,7 +27,7 @@ def polysynth(
     
     return a * trace, a
 
-def armonicsynth(
+def harmonicsynth(
         frequency       : np.ndarray,
         trace           : np.ndarray,
         n_harmonics     : int | None = None,
@@ -99,7 +99,7 @@ def _random_harmonic_response(
     g = np.full_like(x, 0.0, dtype=np.float64)
     for k in range(1, K + 1):
         alpha = k * np.pi * x
-        g += a_cos[k] * np.cos(alpha) + b_sin[k] * np.sin(alpha)
+        g += (a_cos[k]/k**2) * np.cos(alpha) + (b_sin[k]/k**2) * np.sin(alpha)
 
     a = np.exp(g - np.mean(g))
     return a

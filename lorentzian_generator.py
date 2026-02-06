@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 # from lorentzian import lorentzian as lorentzian_cy
-from libraries import lorentzian_cy, ParameterLimits, polysynth 
+from libraries import lorentzian_cy, ParameterLimits, polysynth, harmonicsynth
 from libraries import MAX_LENGTH, MIN_LENGTH
 from sctlib.analysis import Trace
 from sctlib.analysis.trace.support._one_shot_fit import (
@@ -225,7 +225,7 @@ def lorentzian_generator(
             span_hz = np.random.choice([2e6, 3.5e6, 4e6, 9e6])
         else:
             span_hz = np.random.uniform(2e6, 9e6)
-        delta_f_max = span_hz / 2.0 """
+        delta_f_max = span_hz / 2.0  """
         
         # Generate the frequency array
         f_i = np.linspace(params['fr'] - delta_f_max, 
@@ -289,10 +289,9 @@ def lorentzian_generator(
         
         poly_deg_range=np.random.choice(range(1, 5+1))
         
-        s_clean, poly = polysynth(
+        s_clean, poly = harmonicsynth(
             f_i, s0,
-            poly_order = poly_deg_range,
-            poly_coeff_scale=np.random.uniform(0.02, 0.06),
+            harmonic_scale=0.05,
         )
         
         # # Synthetic IQ imbalance(I don't want to use it for the moment).
@@ -374,7 +373,7 @@ def lorentzian_generator(
             
             
             fig, ax = plt.subplots(2, 2, dpi = debug_dpi, constrained_layout=True)
-            fig.suptitle(f"kappac = {kappac_true[index]:.2e} Hz, kappai = {kappai_true[index]:.2e} Hz")
+            fig.suptitle(f"kappac = {kappac_true[index]:.2e} Hz, kappai = {kappai_true[index]:.2e} Hz, delay= {params['dt']:.2e} s")
             ax[0,0].plot(f_plot[sorted_indices], amp_real[sorted_indices], linestyle="-")
             ax[0,0].tick_params(direction='in', which='both')
             ax[0,1].plot(f_plot[sorted_indices], phase_real[sorted_indices], linestyle="-")

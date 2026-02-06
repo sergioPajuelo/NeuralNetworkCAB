@@ -11,7 +11,7 @@ from .lorentzian import lorentzian as lorentzian_cy
 
 from .constants import ParameterLimits, MAX_LENGTH, MIN_LENGTH
 
-from ._polysynth import polysynth
+from ._polysynth import polysynth, harmonicsynth
 
 __all__ = ["lorentzian_cy", "ParameterLimits", "polysynth",
-           "MAX_LENGTH", "MIN_LENGTH"]
+           "MAX_LENGTH", "MIN_LENGTH", "harmonicsynth"]
