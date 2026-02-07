@@ -219,13 +219,13 @@ def lorentzian_generator(
         kappac_true[index] = params['kappac']
         kappai_true[index] = params['kappai']
 
-        delta_f_max = sweep_factor * params['kappa']
+        #delta_f_max = sweep_factor * params['kappa']
 
-        """ if np.random.rand() < 0.8:
+        if np.random.rand() < 0.8:
             span_hz = np.random.choice([2e6, 3.5e6, 4e6, 9e6])
         else:
-            span_hz = np.random.uniform(2e6, 9e6)
-        delta_f_max = span_hz / 2.0  """
+            span_hz = np.random.uniform(2e6, 10e6)
+        delta_f_max = span_hz / 2.0  
         
         # Generate the frequency array
         f_i = np.linspace(params['fr'] - delta_f_max, 

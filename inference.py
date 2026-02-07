@@ -13,6 +13,8 @@ from pathlib import Path
 from lorentzian import lorentzian as lorentzian_cy
 from network import Net
 from sctlib.analysis import Trace
+from libraries.constants import GLOBAL_F_SCALE
+
 
 
 def load_trained_model(model_path: str) -> tuple[Net, dict]:
@@ -79,11 +81,12 @@ def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
 
     return np.concatenate([I_n, Q_n], axis=1).astype(np.float32) 
 
-def build_f_norm(F, M, eps=1e-12):
+def build_f_norm_fixed(F, M, eps=1e-12, scale_val=GLOBAL_F_SCALE):
     """
-    F: (N, max_F) float64/float32 (padded)
-    M: (N, max_F) 0/1 mask
-    Devuelve F_norm en [-1,1] aprox, con padding a 0.
+    F: (N, max_F) padded
+    M: (N, max_F) mask 0/1
+    - Centra cada traza respecto a su media (mu) en zona válida (mask)
+    - Escala SIEMPRE con una constante global (scale_val), preservando unidades
     """
     F = F.astype(np.float64, copy=False)
     M = M.astype(np.float32, copy=False)
@@ -91,10 +94,8 @@ def build_f_norm(F, M, eps=1e-12):
     denom = np.sum(M, axis=1, keepdims=True) + eps
     mu = np.sum(F * M, axis=1, keepdims=True) / denom
 
-    Fc = (F - mu) * M  # padding a 0
-
-    scale = np.max(np.abs(Fc), axis=1, keepdims=True) + eps
-    F_norm = (Fc / scale).astype(np.float32)
+    Fc = (F - mu) * M  # padding -> 0
+    F_norm = (Fc / float(scale_val)).astype(np.float32)
     return F_norm
 
 def diagnostic_span_correlation(ok_paths, pct_errors_base):
@@ -192,7 +193,7 @@ def build_nn_input_from_dat(dat_path: str, input_dim: int):
     X_iq[:, max_F:] *= M_
 
     # ---- F como canal ----
-    F_norm = build_f_norm(F_pad[None, :], M_)
+    F_norm = build_f_norm_fixed(F_pad[None, :], M_)
 
     # ---- X final ----
     X = np.concatenate([
@@ -266,7 +267,7 @@ def main():
     kc_oneshot_list = []
     spans = []
 
-    for dat_path in dat_files[100:140]:
+    for dat_path in dat_files[140:195]:
 
         try:
             # --- One-shot ---
