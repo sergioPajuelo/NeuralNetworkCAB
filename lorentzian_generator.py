@@ -191,6 +191,7 @@ def lorentzian_generator(
     X_clean = np.zeros((n_samples, 2 * MAX_LENGTH), dtype=np.float32)
     
     F_len = np.zeros( n_samples, dtype=np.int32)
+    dts = np.zeros(n_samples, dtype=np.float32)
     F     = np.zeros((n_samples, MAX_LENGTH), dtype=np.float64)
     mask  = np.zeros((n_samples, MAX_LENGTH), dtype=np.float32)
 
@@ -218,19 +219,29 @@ def lorentzian_generator(
         
         kappac_true[index] = params['kappac']
         kappai_true[index] = params['kappai']
+        dts[index] = float(params["dt"])
+
 
         #delta_f_max = sweep_factor * params['kappa']
 
         if np.random.rand() < 0.8:
-            span_hz = np.random.choice([2e6, 3.5e6, 4e6, 9e6])
+            opciones = [2e6, 3.5e6, 4e6, 9e6]
+            pesos = [0.25, 0.1, 0.5, 0.15] 
+            span_hz = np.random.choice(opciones, p=pesos)
         else:
             span_hz = np.random.uniform(2e6, 10e6)
         delta_f_max = span_hz / 2.0  
         
         # Generate the frequency array
-        f_i = np.linspace(params['fr'] - delta_f_max, 
-                          params['fr'] + delta_f_max, 
-                          trace_length, dtype=np.float64)
+        if np.random.rand() < 0.35:
+            max_offset = 0.15 * span_hz 
+            offset = np.random.uniform(-max_offset, max_offset)
+        else:
+            offset = 0.0
+
+        f_i = np.linspace(params['fr'] - delta_f_max + offset, 
+                        params['fr'] + delta_f_max + offset, 
+                        trace_length, dtype=np.float64)
 
         df_Hz = float(f_i[1] - f_i[0])
         dfs[index] = df_Hz
@@ -291,7 +302,7 @@ def lorentzian_generator(
         
         s_clean, poly = harmonicsynth(
             f_i, s0,
-            harmonic_scale=0.05,
+            harmonic_scale=0.02,
         )
         
         # # Synthetic IQ imbalance(I don't want to use it for the moment).
@@ -409,7 +420,7 @@ def lorentzian_generator(
                 fp.write(f"r={params['r']}\n")
                 fp.write(f"noise_std_signal_used={float(sig)}\n")
 
-    return F, X_meas, X_clean, kappac_true, kappai_true, F_len, mask, dfs
+    return F, X_meas, X_clean, kappac_true, kappai_true, F_len, mask, dfs, dts
 
 
 
@@ -502,9 +513,9 @@ if __name__ == "__main__":
     ax.tick_params(direction="in", which="both", top=True, right=True)
     plt.show()  """
 
-    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs = lorentzian_generator(
+    F, X_meas, X_clean, kc_true, kappai_true, F_len, mask, dfs, dts = lorentzian_generator(
         n_samples          = 100,
-        noise_std_signal   = 0.0,
+        noise_std_signal   = (0.0001, 0.0004),
         save_debug_dataset = True,
         save_dir           = "Dataset_demo",
     ) 

@@ -81,12 +81,12 @@ class Net(nn.Module):
     ) -> None:
         super().__init__()
 
-        if input_dim % 4 != 0:
-            raise ValueError("input_dim debe ser múltiplo de 4 (I || Q || mask || freq).")
+        if (input_dim - 1) % 4 != 0:
+            raise ValueError("input_dim debe ser 4*F + 1 (df escalar al final).")
 
         self.input_dim = int(input_dim)
         self.output_dim = int(output_dim)
-        self.F = input_dim // 4
+        self.F = (input_dim - 1) // 4
 
         self.epochs = int(epochs)
         self.loss = nn.MSELoss() if loss is None else loss
@@ -124,7 +124,7 @@ class Net(nn.Module):
         self.act = nn.ReLU(inplace=True)
 
         # concat avg+max => 2*c4
-        self.fc1 = nn.Linear(2 * c4, self.n_units)
+        self.fc1 = nn.Linear(2 * c4 + 1, self.n_units)
         self.fc2 = nn.Linear(self.n_units, self.n_units)
         self.fc3 = nn.Linear(self.n_units, self.n_units)
         self.out = nn.Linear(self.n_units, self.output_dim)
@@ -140,6 +140,7 @@ class Net(nn.Module):
         Q = x[:, self.F:2*self.F]
         M = x[:, 2*self.F:3*self.F]
         Freq = x[:, 3*self.F:4*self.F]
+        df_scalar = x[:, 4*self.F:4*self.F + 1]  # (N,1)
 
         # Asegura que freq padding queda a 0 (por si acaso)
         Freq = Freq * M
@@ -170,7 +171,7 @@ class Net(nn.Module):
         h_masked = h.masked_fill(m == 0, neg_inf)     # (N,c4,L)
         h_max = h_masked.max(dim=-1).values           # (N,c4)
 
-        h_combined = torch.cat([h_avg, h_max], dim=1)          # (N, 2*c4)
+        h_combined = torch.cat([h_avg, h_max, df_scalar], dim=1)  # (N, 2*c4 + 1)
 
         h = self.drop(self.act(self.fc1(h_combined)))
         h = self.drop(self.act(self.fc2(h)))
@@ -231,5 +232,3 @@ class Net(nn.Module):
                 out = self.forward(xb)
                 preds.append(out.cpu())
         return torch.cat(preds, dim=0).numpy()
-
-

@@ -12,7 +12,8 @@ import matplotlib.pyplot as plt
 
 from network import Net
 from sctlib.analysis import Trace
-from lorentzian_generator import padder_optimum
+from libraries.constants import GLOBAL_F_SCALE
+
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,37 +35,135 @@ def load_ckpt(model_path: str):
     net.load_state_dict(ckpt["model_state_dict"])
     return net, ckpt
 
+def load_iq_from_dat(dat_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    try:
+        data = np.loadtxt(dat_path, comments="#", delimiter=None)
+    except Exception:
+        data = np.genfromtxt(dat_path, comments="#", delimiter=None)
 
-def build_X_from_trace(trace: Trace, max_F: int) -> tuple[np.ndarray, np.ndarray]:
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+
+    if data.shape[1] < 3:
+        raise ValueError(f"Esperaba al menos 3 columnas (freq, I, Q). Tengo {data.shape[1]} en {dat_path}")
+
+    f = data[:, 0].astype(np.float64)
+    I = data[:, 1].astype(np.float64)
+    Q = data[:, 2].astype(np.float64)
+
+    m = np.isfinite(f) & np.isfinite(I) & np.isfinite(Q)
+    f, I, Q = f[m], I[m], Q[m]
+
+    if f.size < 2:
+        raise ValueError("El fichero tiene muy pocos puntos válidos.")
+
+    order = np.argsort(f)
+    return f[order], I[order], Q[order]
+
+
+def masked_mean_std_iq(X_iq, M, max_F, eps=1e-8):
+    I = X_iq[:, :max_F]
+    Q = X_iq[:, max_F:2*max_F]
+
+    w = M.astype(np.float32)
+    denom = np.sum(w, axis=1, keepdims=True) + eps
+
+    muI = np.sum(I * w, axis=1, keepdims=True) / denom
+    muQ = np.sum(Q * w, axis=1, keepdims=True) / denom
+
+    varI = np.sum(((I - muI) ** 2) * w, axis=1, keepdims=True) / denom
+    varQ = np.sum(((Q - muQ) ** 2) * w, axis=1, keepdims=True) / denom
+
+    stdI = np.sqrt(varI + eps)
+    stdQ = np.sqrt(varQ + eps)
+
+    I_n = (I - muI) / stdI
+    Q_n = (Q - muQ) / stdQ
+
+    return np.concatenate([I_n, Q_n], axis=1).astype(np.float32)
+
+
+def build_f_norm_fixed(F, M, eps=1e-12, scale_val=GLOBAL_F_SCALE):
+    F = F.astype(np.float64, copy=False)
+    M = M.astype(np.float32, copy=False)
+
+    denom = np.sum(M, axis=1, keepdims=True) + eps
+    mu = np.sum(F * M, axis=1, keepdims=True) / denom
+
+    Fc = (F - mu) * M
+    return (Fc / float(scale_val)).astype(np.float32)
+
+
+def build_nn_input_from_dat(dat_path: str, ckpt: dict) -> np.ndarray:
     """
-    Devuelve:
-      X: (3*max_F,) = [I_pad||Q_pad||M]
-      M: (max_F,)
-    Nota: normalización igual que training.py:
-      z-score por muestra SOLO en (I||Q), y la mask se concatena sin normalizar.
+    Input NN: [IQ_norm | MASK | F_norm | df_log_norm]
+    EXACTAMENTE igual que en training.py
     """
-    f_pad, I_pad, Q_pad, M = padder_optimum(trace, max_F=max_F)
+    input_dim = int(ckpt["input_dim"])
 
-    I_pad = np.asarray(I_pad, dtype=np.float32)
-    Q_pad = np.asarray(Q_pad, dtype=np.float32)
-    M = np.asarray(M, dtype=np.float32)
+    if (input_dim - 1) % 4 != 0:
+        raise ValueError("input_dim debe ser 4*max_F + 1 (df escalar al final).")
 
-    iq = np.concatenate([I_pad, Q_pad], axis=0)  # (2*max_F,)
-    mu = iq.mean()
-    std = iq.std() + 1e-8
-    iq = (iq - mu) / std
+    max_F = (input_dim - 1) // 4
 
-    X = np.concatenate([iq, M], axis=0).astype(np.float32)  # (3*max_F,)
-    return X, M
+    # --- cargar datos reales ---
+    f, I, Q = load_iq_from_dat(dat_path)
+    Fi = len(f)
+
+    if Fi > max_F:
+        f = f[:max_F]
+        I = I[:max_F]
+        Q = Q[:max_F]
+        Fi = max_F
+
+    # --- df_eff como en training: span en Hz ---
+    span_hz = float(f[-1] - f[0])
+    if not np.isfinite(span_hz) or span_hz <= 0:
+        raise ValueError(f"Span inválido (<=0) en {dat_path}: {span_hz}")
+
+    df_log = np.log(span_hz).astype(np.float32)
+
+    if "df_log_mean" not in ckpt or "df_log_std" not in ckpt:
+        raise KeyError("El checkpoint no contiene df_log_mean/df_log_std. Re-entrena o guarda esos campos.")
+
+    df_log_mean = float(ckpt["df_log_mean"])
+    df_log_std  = float(ckpt["df_log_std"])
+    df_log_norm = (df_log - df_log_mean) / (df_log_std + 1e-8)
+    df_log_norm = np.array([[df_log_norm]], dtype=np.float32)  # (1,1)
+
+    # --- Padding ---
+    I_pad = np.zeros(max_F, dtype=np.float32)
+    Q_pad = np.zeros(max_F, dtype=np.float32)
+    F_pad = np.zeros(max_F, dtype=np.float64)
+    M     = np.zeros(max_F, dtype=np.float32)
+
+    I_pad[:Fi] = I
+    Q_pad[:Fi] = Q
+    F_pad[:Fi] = f
+    M[:Fi]     = 1.0
+
+    # --- Normalización IQ (igual que training) ---
+    X_iq = np.concatenate([I_pad, Q_pad])[None, :]  # (1, 2*max_F)
+    M_   = M[None, :]                               # (1, max_F)
+
+    X_iq = masked_mean_std_iq(X_iq, M_, max_F)
+    X_iq[:, :max_F] *= M_
+    X_iq[:, max_F:] *= M_
+
+    # --- F como canal (igual que training) ---
+    F_norm = build_f_norm_fixed(F_pad[None, :], M_)  # (1, max_F)
+
+    # --- X final: [IQ_norm | mask | F_norm | df_log_norm] ---
+    X = np.concatenate([X_iq, M_, F_norm, df_log_norm], axis=1).astype(np.float32)
+
+    if X.shape[1] != input_dim:
+        raise RuntimeError(f"Input dim mismatch: construido {X.shape[1]} vs ckpt {input_dim}")
+
+    return X
 
 
-def make_experimental_dataset(
-    dataset_dir: Path,
-    max_F: int,
-    *,
-    baseline=(3, 0.7),
-    limit_files: int | None = None,
-):
+def make_experimental_dataset(dataset_dir: Path, ckpt: dict, *, baseline=(3,0.7), limit_files=None):
+
     dat_files = list(dataset_dir.glob("*.dat"))
 
     rng = np.random.default_rng(seed=42)  
@@ -80,30 +179,28 @@ def make_experimental_dataset(
 
     for p in dat_files:
         try:
-            trace = Trace()
-            trace.load_trace(source="CAB", path=str(p))
-
-            # Padding + mask (para que el input sea consistente con la Net)
-            X, _M = build_X_from_trace(trace, max_F=max_F)
+            X = build_nn_input_from_dat(str(p), ckpt)   # (1, input_dim)
+            X = X.reshape(-1)
 
             # One-shot 
-            f_pad, I_pad, Q_pad, _M2 = padder_optimum(trace, max_F=max_F)
-            trace.trace = np.asarray(I_pad) + 1j * np.asarray(Q_pad)
-            trace.frequency = np.asarray(f_pad)
-
+            trace = Trace()
+            trace.load_trace(source="CAB", path=str(p))
             results = trace.do_fit(mode="one-shot", baseline=baseline, verbose=False)
             fit = results["one-shot"].final
             kc = float(fit["kappac"])
 
-
+            if (not np.isfinite(kc)) or (kc <= 0.0) or (kc < 1e4) or (kc > 1e5):
+                raise ValueError(f"kc one-shot inválido: {kc}")
+            
             y = np.log(kc).astype(np.float32)
 
             X_list.append(X)
             y_list.append(y)
             ok += 1
 
-        except Exception:
+        except Exception as e:
             fail += 1
+            print(f"[FAIL] {p.name}: {e}")
             continue
 
     if ok == 0:
@@ -152,7 +249,8 @@ def main():
     args = ap.parse_args()
 
     net, ckpt = load_ckpt(args.base_ckpt)
-    max_F = int(ckpt["input_dim"]) // 3
+    max_F = (ckpt["input_dim"] - 1) // 4
+
 
     # Config fine-tune
     net.epochs = int(args.epochs)
@@ -167,12 +265,8 @@ def main():
     freeze_backbone(net, freeze=bool(args.freeze_backbone))
 
     # Dataset experimental (pseudo-label = one-shot)
-    X, y = make_experimental_dataset(
-        Path(args.dataset_dir),
-        max_F=max_F,
-        baseline=(int(args.baseline_order), float(args.baseline_scale)),
-        limit_files=int(args.limit_files) if args.limit_files is not None else None,
-    )
+    X, y = make_experimental_dataset(Path(args.dataset_dir), ckpt, baseline=(int(args.baseline_order), float(args.baseline_scale)), limit_files=int(args.limit_files) if args.limit_files is not None else None)
+
 
     # Split train/val
     N = len(X)
@@ -204,6 +298,11 @@ def main():
         "conv_channels": int(ckpt.get("conv_channels", 64)),
         "kernel_size": int(ckpt.get("kernel_size", 9)),
         "dropout": float(ckpt.get("dropout", 0.10)),
+        "df_log_mean": float(ckpt["df_log_mean"]),
+        "df_log_std":  float(ckpt["df_log_std"]),
+        "n_channels":  int(ckpt.get("n_channels", 4)),
+        "max_F":       int(ckpt.get("max_F", (ckpt["input_dim"]-1)//4)),
+        "uses_f_norm": True,
         "finetune": {
             "epochs": int(args.epochs),
             "batch_size": int(args.batch_size),

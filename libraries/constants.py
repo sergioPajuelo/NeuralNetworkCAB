@@ -20,9 +20,11 @@ MAX_POLY_ORDER = 3
 
 HARMONIC_SCALE = 0.05
 MIN_HARM_ORDER = 1
-MAX_HARM_ORDER = 10
+MAX_HARM_ORDER = 7
 
 GLOBAL_F_SCALE = 10e6
+N_ONESHOT_COMP = 1000
+
 
 
 
@@ -39,11 +41,11 @@ class ParameterLimits:
     ZERO_LOWER_LIMIT      : Final[float] = -np.pi    # rad
     ZERO_UPPER_LIMIT      : Final[float] =  np.pi    # rad
     LOSSES_LOWER_LIMIT    : Final[float] = 1e2       # Hz
-    LOSSES_UPPER_LIMIT    : Final[float] = 1e4       # Hz
+    LOSSES_UPPER_LIMIT    : Final[float] = 1e5       # Hz
     COUPLING_LOWER_LIMIT  : Final[float] = 1e4       # Hz
     COUPLING_UPPER_LIMIT  : Final[float] = 1e5       # Hz
-    FANO_LOWER_LIMIT      : Final[float] = 0.0       # rad
-    FANO_UPPER_LIMIT      : Final[float] = 0.0       # rad
+    FANO_LOWER_LIMIT      : Final[float] = -np.pi/6       # rad
+    FANO_UPPER_LIMIT      : Final[float] = np.pi/6       # rad
     RESONANCE_LOWER_LIMIT : Final[float] = 3.0e8     # Hz
     RESONANCE_UPPER_LIMIT : Final[float] = 1.0e9     # Hz
     

@@ -153,17 +153,19 @@ def diagnostic_span_correlation(ok_paths, pct_errors_base):
         print("\n[ANÁLISIS]: La correlación no es determinante.")
 
 
-
-def build_nn_input_from_dat(dat_path: str, input_dim: int):
+def build_nn_input_from_dat(dat_path: str, ckpt: dict) -> np.ndarray:
     """
-    Input NN: [IQ_norm | MASK | F_norm]
-    EXACTAMENTE igual que en training
+    Input NN: [IQ_norm | MASK | F_norm | df_log_norm]
+    EXACTAMENTE igual que en training.py
     """
-    if input_dim % 4 != 0:
-        raise ValueError("input_dim debe ser 4*max_F")
+    input_dim = int(ckpt["input_dim"])
 
-    max_F = input_dim // 4
+    if (input_dim - 1) % 4 != 0:
+        raise ValueError("input_dim debe ser 4*max_F + 1 (df escalar al final).")
 
+    max_F = (input_dim - 1) // 4
+
+    # --- cargar datos reales ---
     f, I, Q = load_iq_from_dat(dat_path)
     Fi = len(f)
 
@@ -173,7 +175,22 @@ def build_nn_input_from_dat(dat_path: str, input_dim: int):
         Q = Q[:max_F]
         Fi = max_F
 
-    # Padding
+    # --- df_eff como en training: span en Hz ---
+    span_hz = float(f[-1] - f[0])
+    if not np.isfinite(span_hz) or span_hz <= 0:
+        raise ValueError(f"Span inválido (<=0) en {dat_path}: {span_hz}")
+
+    df_log = np.log(span_hz).astype(np.float32)
+
+    if "df_log_mean" not in ckpt or "df_log_std" not in ckpt:
+        raise KeyError("El checkpoint no contiene df_log_mean/df_log_std. Re-entrena o guarda esos campos.")
+
+    df_log_mean = float(ckpt["df_log_mean"])
+    df_log_std  = float(ckpt["df_log_std"])
+    df_log_norm = (df_log - df_log_mean) / (df_log_std + 1e-8)
+    df_log_norm = np.array([[df_log_norm]], dtype=np.float32)  # (1,1)
+
+    # --- Padding ---
     I_pad = np.zeros(max_F, dtype=np.float32)
     Q_pad = np.zeros(max_F, dtype=np.float32)
     F_pad = np.zeros(max_F, dtype=np.float64)
@@ -184,23 +201,22 @@ def build_nn_input_from_dat(dat_path: str, input_dim: int):
     F_pad[:Fi] = f
     M[:Fi]     = 1.0
 
-    # ---- Normalización IQ (MISMA que training) ----
-    X_iq = np.concatenate([I_pad, Q_pad])[None, :]
-    M_   = M[None, :]
+    # --- Normalización IQ (igual que training) ---
+    X_iq = np.concatenate([I_pad, Q_pad])[None, :]  # (1, 2*max_F)
+    M_   = M[None, :]                               # (1, max_F)
 
     X_iq = masked_mean_std_iq(X_iq, M_, max_F)
     X_iq[:, :max_F] *= M_
     X_iq[:, max_F:] *= M_
 
-    # ---- F como canal ----
-    F_norm = build_f_norm_fixed(F_pad[None, :], M_)
+    # --- F como canal (igual que training) ---
+    F_norm = build_f_norm_fixed(F_pad[None, :], M_)  # (1, max_F)
 
-    # ---- X final ----
-    X = np.concatenate([
-        X_iq,
-        M_,
-        F_norm
-    ], axis=1).astype(np.float32)
+    # --- X final: [IQ_norm | mask | F_norm | df_log_norm] ---
+    X = np.concatenate([X_iq, M_, F_norm, df_log_norm], axis=1).astype(np.float32)
+
+    if X.shape[1] != input_dim:
+        raise RuntimeError(f"Input dim mismatch: construido {X.shape[1]} vs ckpt {input_dim}")
 
     return X
 
@@ -252,11 +268,11 @@ def main():
         return
 
     net_base, ckpt_base = load_trained_model(MODEL_BASE)
-    #net_ft,   ckpt_ft   = load_trained_model(MODEL_FT)
+    net_ft,   ckpt_ft   = load_trained_model(MODEL_FT)
 
     input_dim_base = int(ckpt_base["input_dim"])
-    #input_dim_ft   = int(ckpt_ft["input_dim"])
-    #assert input_dim_base == input_dim_ft, "Los input_dim no coinciden"
+    input_dim_ft   = int(ckpt_ft["input_dim"])
+    assert input_dim_base == input_dim_ft, "Los input_dim no coinciden"
     input_dim = input_dim_base
 
     rel_errors_base = []
@@ -264,10 +280,11 @@ def main():
     pct_errors_base = []
     pct_errors_ft   = []
     ok_paths = []
+    ok_paths_ft = []
     kc_oneshot_list = []
     spans = []
 
-    for dat_path in dat_files[140:195]:
+    for dat_path in dat_files[:20]:
 
         try:
             # --- One-shot ---
@@ -285,7 +302,7 @@ def main():
             kc_oneshot_list.append(kc_oneshot)
 
             # --- NN ---
-            X_real = build_nn_input_from_dat(str(dat_path), input_dim)
+            X_real = build_nn_input_from_dat(str(dat_path), ckpt_base)
             kc_base = predict_kc_nn(net_base, X_real)
 
             # --- Errores ---
@@ -295,10 +312,22 @@ def main():
             rel_errors_base.append(err_base)
             ok_paths.append(dat_path)
             pct_errors_base.append(pct_base)
-            #pct_errors_ft.append(pct_ft)
 
-        except Exception:
-            print(Exception)
+            # --- NN fine-tuned ---
+            X_real_ft = build_nn_input_from_dat(str(dat_path), ckpt_ft)
+            kc_ft = predict_kc_nn(net_ft, X_real_ft)
+
+            err_ft = abs(np.log(kc_ft) - np.log(kc_oneshot))
+            pct_ft = abs(kc_ft - kc_oneshot) / kc_oneshot * 100.0
+
+            rel_errors_ft.append(err_ft)
+            pct_errors_ft.append(pct_ft)
+            ok_paths_ft.append(dat_path)
+
+
+        except Exception as e:
+            print(f"[ERROR] {dat_path.name}: {e}")
+            traceback.print_exc()
 
         try:
             span = get_real_span_from_dat(dat_path)
@@ -318,11 +347,11 @@ def main():
 
     print(f"Archivos evaluados: {rel_errors_base.size}")
     print(f"BASE mean |Δlog kc|: {rel_errors_base.mean():.6f}  std: {rel_errors_base.std(ddof=1):.6f}")
-    #print(f"FT   mean |Δlog kc|: {rel_errors_ft.mean():.6f}  std: {rel_errors_ft.std(ddof=1):.6f}")
+    print(f"FT   mean |Δlog kc|: {rel_errors_ft.mean():.6f}  std: {rel_errors_ft.std(ddof=1):.6f}")
 
     print("\n--- % distancia al one-shot (|kc_pred - kc_one| / kc_one) ---")
     print(f"BASE mean %err: {pct_errors_base.mean():.2f}%  std: {pct_errors_base.std(ddof=1):.2f}%")
-    #print(f"FT   mean %err: {pct_errors_ft.mean():.2f}%  std: {pct_errors_ft.std(ddof=1):.2f}%")
+    print(f"FT   mean %err: {pct_errors_ft.mean():.2f}%  std: {pct_errors_ft.std(ddof=1):.2f}%")
     print(f"BASE pct_errors: {pct_errors_base}")
     print(f"BASE mean |Δlog kc|: {rel_errors_base}")
 
@@ -337,32 +366,38 @@ def main():
     ) * 100.0
     print(f"% fuera de [1e4, 1e5]: {outside:.1f}%")
 
-    #print("\n--- Mejora entre modelo base y fine-tuned ---")
-    #improv = (rel_errors_base.mean() - rel_errors_ft.mean()) / (rel_errors_base.mean() + 1e-12)
-    #print(f"Mejora relativa (menor es mejor): {improv:.2%}")
+    print("\n--- Mejora entre modelo base y fine-tuned ---")
+    improv = (rel_errors_base.mean() - rel_errors_ft.mean()) / (rel_errors_base.mean() + 1e-12)
+    print(f"Mejora relativa (menor es mejor): {improv:.2%}")
     
 
-    top_5_idx = np.argsort(pct_errors_base)[-5:][::-1]
+    top_20_idx = np.argsort(pct_errors_base)[-20:][::-1]
     
-    print("\n--- Generando plots de los 5 casos de mayor discrepancia ---")
+    print("\n--- Generando plots de los 20 casos de mayor discrepancia ---")
     
-    for rank, idx in enumerate(top_5_idx):
+    for rank, idx in enumerate(top_20_idx):
         dat_path = ok_paths[idx]
-        
+
+        # --- Carga experimental ---
         f_exp, I_exp, Q_exp = load_iq_from_dat(str(dat_path))
-        amp_exp = np.sqrt(I_exp**2 + Q_exp**2)
-        
+        s_exp = I_exp + 1j * Q_exp
+        amp_exp = np.abs(s_exp)
+        phase_exp = np.unwrap(np.angle(s_exp))
+
+        # --- One-shot ---
         trace = Trace()
         trace.load_trace(source="CAB", path=str(dat_path))
         results = trace.do_fit(mode="one-shot", baseline=(3, 0.7), verbose=False)
+        plt.close("all")  
+
         fit = results["one-shot"].final
-        
         kc_oneshot = float(fit["kappac"])
-        X_input = build_nn_input_from_dat(str(dat_path), input_dim)
+
+        # --- NN ---
+        X_input = build_nn_input_from_dat(str(dat_path), ckpt_base)
         kc_nn = predict_kc_nn(net_base, X_input)
 
-        # Reconstrucción de la curva NN para validación visual
-        # Usamos los parámetros del one-shot (fr, phi, etc.) pero sustituimos Kc
+        # Reconstrucción curva NN
         kappai = float(fit["kappai"])
         kappa_nn = kappai + kc_nn
         rc_nn = kc_nn / kappa_nn if kappa_nn > 0 else float(fit["rc"])
@@ -372,26 +407,94 @@ def main():
             float(fit["a"]), float(fit["dt"]), float(fit["phi0"]),
             rc_nn, kappa_nn, float(fit["fano"]), float(fit["resonance"])
         )
+
+        # One-shot complejo
+        s_oneshot = np.asarray(results["one-shot"].tprx)
+        n = min(len(f_exp), len(s_oneshot))
+
+        # Amplitudes
+        amp_oneshot = np.abs(s_oneshot[:n])
         amp_nn = np.abs(s_nn_curve)
-        amp_oneshot = np.abs(results["one-shot"].tprx)
 
-        # Plotting
+        # Fases (unwrap)
+        phase_oneshot = np.unwrap(np.angle(s_oneshot[:n]))
+        phase_nn = np.unwrap(np.angle(s_nn_curve))
 
-        n = min(len(f_exp), len(amp_oneshot))
-        fig, ax = plt.subplots(figsize=(10, 5), dpi=150)
-        ax.scatter(f_exp, amp_exp, s=10, color="black", alpha=0.3, label="Data (Exp)")
-        ax.plot(f_exp[:n], amp_oneshot[:n], 'g--', label="One-shot", lw=2)
-        ax.plot(f_exp, amp_nn, 'r-', label=f"NN (Kc={kc_nn:.2e})", lw=2)
+        # IQ (trayectorias)
+        I_oneshot = s_oneshot[:n].real
+        Q_oneshot = s_oneshot[:n].imag
+        I_nn = s_nn_curve.real
+        Q_nn = s_nn_curve.imag
+
         
-        ax.set_title(f"Discrepancia Rank {rank+1} - Archivo: {dat_path.name}")
-        ax.set_xlabel("Frecuencia [Hz]")
-        ax.set_ylabel("Amplitud")
-        ax.legend()
-        
-        # Guardar imagen 
-        plt.savefig(f"discrepancia_top_{rank+1}.png")
-        plt.close()
-        print(f"Guardado: discrepancia_top_{rank+1}.png (Error: {pct_errors_base[idx]:.2f}%)")
+        i0 = int(np.argmin(amp_exp))
+
+        w = max(15, int(0.02 * len(f_exp)))   # 2% de la traza
+
+        iL = max(0, i0 - w)
+        iR = min(len(f_exp) - 1, i0 + w)
+
+        iL_one = min(iL, n - 1)
+        iR_one = min(iR, n - 1)
+
+        fig, ax = plt.subplots(2, 2, figsize=(14, 9), dpi=150, constrained_layout=True)
+
+        # (1) Amplitud
+        ax[0, 0].scatter(f_exp, amp_exp, s=10, color="black", alpha=0.25, label="Data (Exp)")
+        ax[0, 0].plot(f_exp[:n], amp_oneshot, "g--", lw=2, label="One-shot")
+        ax[0, 0].plot(f_exp, amp_nn, "r-", lw=2, label=f"NN (Kc={kc_nn:.2e})")
+        ax[0, 0].set_xlabel("Frecuencia [Hz]")
+        ax[0, 0].set_ylabel("Amplitud")
+        ax[0, 0].set_title("Amplitud")
+        ax[0, 0].legend()
+
+        # (2) Fase
+        ax[0, 1].scatter(f_exp, phase_exp, s=10, color="black", alpha=0.25, label="Data (Exp)")
+        ax[0, 1].plot(f_exp[:n], phase_oneshot, "g--", lw=2, label="One-shot")
+        ax[0, 1].plot(f_exp, phase_nn, "r-", lw=2, label="NN")
+        ax[0, 1].set_xlabel("Frecuencia [Hz]")
+        ax[0, 1].set_ylabel("Fase [rad]")
+        ax[0, 1].set_title("Fase")
+        ax[0, 1].legend()
+
+        # (3) I vs Q
+        ax[1, 0].plot(I_exp, Q_exp, color="black", alpha=0.6, lw=1.5, label="Data (Exp)")
+        ax[1, 0].plot(I_oneshot, Q_oneshot, "g--", lw=2, label="One-shot")
+        ax[1, 0].plot(I_nn, Q_nn, "r-", lw=2, label="NN")
+        ax[1, 0].set_xlabel("I (Re{S21})")
+        ax[1, 0].set_ylabel("Q (Im{S21})")
+        ax[1, 0].set_title("I vs Q")
+        ax[1, 0].axis("equal")
+        ax[1, 0].legend()
+
+        # (4) Zoom dip
+        ax[1, 1].scatter(
+            f_exp[iL:iR+1], amp_exp[iL:iR+1],
+            s=18, color="black", alpha=0.35, label="Data (Exp)"
+        )
+        ax[1, 1].plot(
+            f_exp[iL_one:iR_one+1], amp_oneshot[iL_one:iR_one+1],
+            "g--", lw=2, label="One-shot"
+        )
+        ax[1, 1].plot(
+            f_exp[iL:iR+1], amp_nn[iL:iR+1],
+            "r-", lw=2, label="NN"
+        )
+        ax[1, 1].set_xlabel("Frecuencia [Hz]")
+        ax[1, 1].set_ylabel("Amplitud")
+        ax[1, 1].set_title("Zoom mínimo (dip)")
+        ax[1, 1].legend()
+
+        # Título global
+        fig.suptitle(
+            f"Discrepancia Rank {rank+1} - {dat_path.name}\n"
+            f"Error: {pct_errors_base[idx]:.2f}% | Kc_one={kc_oneshot:.2e} | Kc_nn={kc_nn:.2e}",
+            y=1.02
+        )
+
+        out_name = f"discrepancia_top_{rank+1}.png"
+        plt.savefig(out_name)
+        plt.close(fig)
 
     spans = np.array(spans)
     print("\n--- Estadísticas span real ---")
